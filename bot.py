@@ -9,7 +9,7 @@ from aiohttp import web
 # --- CẤU HÌNH ---
 TOKEN = os.getenv("BOT_TOKEN", "8783875910:AAG8-oIXhhxzn4hE1vx46mayPYiyOJalSYw")
 ADMIN_ID = 8956161451
-# ĐIỀN USERNAME TELEGRAM CỦA BẠN VÀO ĐÂY (bỏ dấu @ ở đầu)
+# ĐIỀN USERNAME TELEGRAM CỦA BẠN VÀO ĐÂY (thanhnam1608)
 ADMIN_USERNAME = "thanhnam_admin" 
 DATA_FILE = "data.json"
 
