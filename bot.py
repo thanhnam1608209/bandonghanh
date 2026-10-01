@@ -3,6 +3,7 @@ import json
 import os
 import random
 import string
+from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
@@ -32,6 +33,7 @@ class AdminStates(StatesGroup):
     waiting_for_combo_name = State()
     waiting_for_combo_courses = State()
     waiting_for_combo_price = State()
+    waiting_for_private_msg = State() # Trạng thái gửi tin nhắn cá nhân cho 1 UID
 
 def load_data():
     if not os.path.exists(DATA_FILE):
@@ -80,6 +82,29 @@ def get_user_menu(user_id):
             kb_layout.insert(0, study_buttons[i:i+2])
     return ReplyKeyboardMarkup(keyboard=kb_layout, resize_keyboard=True)
 
+# Hàm tính thời gian không hoạt động (inactivity time)
+def format_time_diff(last_active_str):
+    if not last_active_str:
+        return "Chưa xác định"
+    try:
+        last_active = datetime.fromisoformat(last_active_str)
+        now = datetime.now()
+        diff = now - last_active
+        
+        seconds = int(diff.total_seconds())
+        if seconds < 60:
+            return "Vừa hoạt động"
+        minutes = seconds // 60
+        if minutes < 60:
+            return f"Không dùng {minutes} phút trước"
+        hours = minutes // 60
+        if hours < 24:
+            return f"Không dùng {hours} giờ trước"
+        days = hours // 24
+        return f"Không dùng {days} ngày trước"
+    except Exception:
+        return "Không rõ"
+
 @dp.message(CommandStart())
 async def command_start_handler(message: types.Message, state: FSMContext):
     await state.clear() 
@@ -87,9 +112,22 @@ async def command_start_handler(message: types.Message, state: FSMContext):
     name = message.from_user.full_name
     data = load_data()
     
-    if str(user_id) not in data["users"]:
-        data["users"][str(user_id)] = {"name": name, "role": "guest", "courses": [], "qr_msg_id": None}
-        save_data(data)
+    str_uid = str(user_id)
+    now_iso = datetime.now().isoformat()
+
+    if str_uid not in data["users"]:
+        data["users"][str_uid] = {
+            "name": name, 
+            "role": "guest", 
+            "courses": [], 
+            "qr_msg_id": None, 
+            "last_active": now_iso
+        }
+    else:
+        # Cập nhật thời gian hoạt động thực tế mỗi khi user gõ /start hoặc tương tác
+        data["users"][str_uid]["name"] = name
+        data["users"][str_uid]["last_active"] = now_iso
+    save_data(data)
 
     if user_id == ADMIN_ID:
         admin_kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -97,9 +135,9 @@ async def command_start_handler(message: types.Message, state: FSMContext):
              InlineKeyboardButton(text="📦 Quản lý Combo (Gộp)", callback_data="admin_combos")],
             [InlineKeyboardButton(text="📂 Quản lý Bài giảng", callback_data="admin_lessons"),
              InlineKeyboardButton(text="📝 Sửa phần Giới thiệu", callback_data="edit_intro")],
+            [InlineKeyboardButton(text="👥 Quản lý Học viên & Thời gian", callback_data="admin_users_list")],
             [InlineKeyboardButton(text="🖨 Máy in Code", callback_data="admin_print_codes")],
-            [InlineKeyboardButton(text="👥 Thống kê", callback_data="admin_stats"),
-             InlineKeyboardButton(text="📢 Thông báo", callback_data="admin_broadcast")]
+            [InlineKeyboardButton(text="📢 Thông báo Tổng", callback_data="admin_broadcast")]
         ])
         await message.answer(f"👑 Chào Boss tối cao **{name}**!\nBảng điều khiển dành riêng cho bạn:", reply_markup=admin_kb, parse_mode="Markdown")
     else:
@@ -108,7 +146,69 @@ async def command_start_handler(message: types.Message, state: FSMContext):
             reply_markup=get_user_menu(user_id)
         )
 
-# ADMIN - QUẢN LÝ MÔN HỌC
+# ==========================================
+# QUẢN LÝ HỌC VIÊN & THỜI GIAN THỰC (DANH SÁCH, UID, INACTIVITY)
+# ==========================================
+@dp.callback_query(F.data == "admin_users_list")
+async def admin_users_list(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: return
+    data = load_data()
+    users = data.get("users", {})
+    
+    if not users:
+        await callback.message.answer("👥 Hệ thống chưa có học viên nào.")
+        await callback.answer()
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    text_summary = f"👥 **DANH SÁCH HỌC VIÊN ({len(users)} người):**\n\n"
+    
+    for uid, info in users.items():
+        name = info.get("name", "Không rõ")
+        last_active = info.get("last_active", "")
+        time_status = format_time_diff(last_active)
+        courses_count = len(info.get("courses", []))
+        
+        text_summary += f"▪️ **{name}**\n   ├ UID: `{uid}`\n   ├ Đã mua: {courses_count} môn\n   └ Trạng thái: _{time_status}_\n\n"
+        
+        # Thêm nút bấm nhanh để gửi tin nhắn cá nhân cho từng UID
+        kb.inline_keyboard.append([
+            InlineKeyboardButton(text=f"✉️ Nhắn riêng {name}", callback_data=f"privatemsg_{uid}")
+        ])
+
+    # Giới hạn hiển thị tin nhắn nếu quá dài, chia nhỏ hoặc gửi trực tiếp
+    if len(text_summary) > 4000:
+        text_summary = text_summary[:4000] + "\n...(Danh sách quá dài)..."
+
+    await callback.message.answer(text_summary, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+# Gửi tin nhắn cá nhân cho 1 học viên
+@dp.callback_query(F.data.startswith("privatemsg_"))
+async def ask_private_message(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID: return
+    target_uid = callback.data.split("_")[1]
+    
+    await state.update_data(private_target_uid=target_uid)
+    await state.set_state(AdminStates.waiting_for_private_msg)
+    await callback.message.answer(f"✉️ **GỬI TIN NHẮN CÁ NHÂN:**\nĐang gửi tới UID: `{target_uid}`\n👉 Hãy nhập nội dung bạn muốn gửi:", parse_mode="Markdown")
+    await callback.answer()
+
+@dp.message(StateFilter(AdminStates.waiting_for_private_msg))
+async def send_private_message_action(message: types.Message, state: FSMContext):
+    user_data = await state.get_data()
+    target_uid = user_data["private_target_uid"]
+    content = message.text.strip()
+    
+    try:
+        await bot.send_message(chat_id=int(target_uid), text=f"📩 **Tin nhắn từ Admin:**\n\n{content}", parse_mode="Markdown")
+        await message.answer(f"✅ Đã gửi tin nhắn thành công tới UID `{target_uid}`!", parse_mode="Markdown")
+    except Exception as e:
+        await message.answer(f"❌ Gửi thất bại (Có thể học viên đã chặn bot): {str(e)}")
+    
+    await state.clear()
+
+# CÁC TÍNH NĂNG ADMIN KHÁC (MÔN HỌC, COMBO, GIỚI THIỆU, BÀI GIẢNG, IN CODE)
 @dp.callback_query(F.data == "admin_courses")
 async def admin_manage_courses(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID: return
@@ -197,7 +297,6 @@ async def save_new_course(message: types.Message, state: FSMContext):
     await message.answer("✅ Đã thêm môn học thành công!", parse_mode="Markdown")
     await state.clear()
 
-# ADMIN - COMBO & GIỚI THIỆU & BÀI GIẢNG & IN CODE & STATS
 @dp.callback_query(F.data == "admin_combos")
 async def admin_manage_combos(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID: return
@@ -321,18 +420,11 @@ async def admin_generate_code(callback: types.CallbackQuery):
     await callback.message.answer(f"✅ Mã code mới:\n`{new_code}`", parse_mode="Markdown")
     await callback.answer()
 
-@dp.callback_query(F.data == "admin_stats")
-async def admin_show_stats(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID: return
-    data = load_data()
-    await callback.message.answer(f"📊 Khách đã chat: {len(data['users'])}\n✅ Lượt kích hoạt: {sum(1 for c in data['codes'].values() if c['used'])}", parse_mode="Markdown")
-    await callback.answer()
-
 @dp.callback_query(F.data == "admin_broadcast")
 async def admin_ask_broadcast(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID: return
     await state.set_state(AdminStates.waiting_for_broadcast)
-    await callback.message.answer("📢 Nhập nội dung thông báo gửi toàn bộ khách hàng:")
+    await callback.message.answer("📢 Nhập nội dung thông báo TỔNG gửi toàn bộ học viên:")
     await callback.answer()
 
 @dp.message(StateFilter(AdminStates.waiting_for_broadcast))
@@ -341,12 +433,12 @@ async def admin_send_broadcast(message: types.Message, state: FSMContext):
     success = 0
     for uid in data["users"].keys():
         try:
-            await message.send_copy(chat_id=uid)
+            await message.send_copy(chat_id=int(uid))
             success += 1
             await asyncio.sleep(0.05)
         except Exception:
             pass
-    await message.answer(f"✅ Đã gửi xong cho {success} khách!")
+    await message.answer(f"✅ Đã gửi thông báo tổng tới {success} học viên!")
     await state.clear()
 
 # KHU VỰC HỌC TẬP & MUA HÀNG
@@ -401,10 +493,9 @@ async def process_course_view(callback: types.CallbackQuery):
     )
     sent = await callback.message.answer_photo(photo=qr_url, caption=msg, parse_mode="Markdown")
     
-    # Lưu lại ID tin nhắn và user_id dạng string chính xác
     str_uid = str(user_id)
     if str_uid not in data["users"]:
-        data["users"][str_uid] = {"name": callback.from_user.full_name, "role": "guest", "courses": []}
+        data["users"][str_uid] = {"name": callback.from_user.full_name, "role": "guest", "courses": [], "last_active": datetime.now().isoformat()}
     data["users"][str_uid]["qr_msg_id"] = sent.message_id
     save_data(data)
     await callback.answer()
@@ -450,7 +541,7 @@ async def support_contact(message: types.Message):
 async def intro_system(message: types.Message):
     await message.answer(load_data().get("intro_text", "Mini-LMS"), parse_mode="Markdown")
 
-# ĐƯỜNG ỐNG WEBHOOK SEPAY THÔNG MINH (ĐÃ FIX LỖI GỬI TIN NHẮN CHO KHÁCH)
+# ĐƯỜNG ỐNG WEBHOOK SEPAY
 async def auto_payment_webhook(request):
     try:
         data = await request.json()
@@ -489,12 +580,10 @@ async def auto_payment_webhook(request):
                 await bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ Cảnh báo: Giao dịch `{amount:,}đ` với nội dung `{transfer_content}` không khớp giá khóa học nào!")
                 return web.json_response({"status": "Khong khop gia"})
             
-            # Đảm bảo user tồn tại trong db dưới dạng string
             str_uid = str(user_id)
             if str_uid not in db["users"]:
-                db["users"][str_uid] = {"name": "Học viên", "role": "member", "courses": [], "qr_msg_id": None}
+                db["users"][str_uid] = {"name": "Học viên", "role": "member", "courses": [], "qr_msg_id": None, "last_active": datetime.now().isoformat()}
             
-            # 1. Cố gắng xóa mã QR cũ của khách
             qr_msg_id = db["users"][str_uid].get("qr_msg_id")
             if qr_msg_id:
                 try:
@@ -503,18 +592,15 @@ async def auto_payment_webhook(request):
                     pass 
             db["users"][str_uid]["qr_msg_id"] = None
             
-            # 2. Cấp quyền khóa học
             for cid in to_grant:
                 if cid not in db["users"][str_uid]["courses"]:
                     db["users"][str_uid]["courses"].append(cid)
             db["users"][str_uid]["role"] = "member"
             
-            # 3. Tạo mã code mới
             new_code = generate_random_code("AUTO")
             db["codes"][new_code] = {"type": "auto", "id": "auto", "used": True}
-            save_data(db)
+            save_data(data)
             
-            # 4. Gửi tin nhắn trực tiếp cho khách hàng
             msg_to_user = (
                 f"🎉 **THANH TOÁN THÀNH CÔNG!**\n\n"
                 f"💳 Hệ thống đã nhận được `{amount:,}đ`.\n"
@@ -527,7 +613,6 @@ async def auto_payment_webhook(request):
             except Exception as e:
                 await bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ Không thể gửi tin nhắn cho user {str_uid}: {str(e)}")
             
-            # 5. Báo cáo cho Admin
             await bot.send_message(chat_id=ADMIN_ID, text=f"🤑 **TIỀN VÀO NỔ THÀNH CÔNG!**\nKhách `{str_uid}` chuyển `{amount:,}đ`.\n✅ Đã thu hồi QR và nhả code **{item_name}**.", parse_mode="Markdown")
             
         return web.json_response({"status": "success"})
