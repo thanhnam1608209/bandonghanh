@@ -9,8 +9,7 @@ from aiohttp import web
 # --- CẤU HÌNH ---
 TOKEN = os.getenv("BOT_TOKEN", "8783875910:AAG8-oIXhhxzn4hE1vx46mayPYiyOJalSYw")
 ADMIN_ID = 8956161451
-# ĐIỀN USERNAME TELEGRAM CỦA BẠN VÀO ĐÂY (thanhnam1608)
-ADMIN_USERNAME = "thanhnam_admin" 
+ADMIN_USERNAME = "thanhnam1608" # Đã cập nhật đúng username của bạn
 DATA_FILE = "data.json"
 
 bot = Bot(token=TOKEN)
@@ -19,7 +18,14 @@ dp = Dispatcher()
 # --- XỬ LÝ DỮ LIỆU ---
 def load_data():
     if not os.path.exists(DATA_FILE):
-        default_data = {"users": {}, "courses": {}, "codes": {}}
+        default_data = {
+            "users": {},
+            "courses": {
+                "Toan": {"name": "Môn Toán", "price": 500000},
+                "Van": {"name": "Môn Văn", "price": 400000}
+            },
+            "codes": {}
+        }
         save_data(default_data)
         return default_data
     with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -29,15 +35,14 @@ def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
-# --- THIẾT KẾ BÀN PHÍM CHÍNH (GIỐNG ẢNH YÊU CẦU) ---
+# --- THIẾT KẾ BÀN PHÍM NỔI CHO KHÁCH/HỌC VIÊN (REPLY KEYBOARD) ---
 user_main_menu = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="💎 Mời bạn nhận quà"), KeyboardButton(text="👑 BXH hôm nay")],
-        [KeyboardButton(text="🎁 Code Tân Thủ"), KeyboardButton(text="📈 Check Chia sẻ")],
-        [KeyboardButton(text="📊 Thống Kê TK"), KeyboardButton(text="💁‍♂️️ Hỗ Trợ – CSKH")]
+        [KeyboardButton(text="📖 Bảng danh sách"), KeyboardButton(text="🔑 Nhập code")],
+        [KeyboardButton(text="💬 Tư vấn - CSKH"), KeyboardButton(text="ℹ️ Giới thiệu")]
     ],
-    resize_keyboard=True, # Tự động thu nhỏ vừa màn hình điện thoại
-    input_field_placeholder="Chọn tính năng bên dưới..."
+    resize_keyboard=True, # Thu nhỏ cho vừa màn hình điện thoại
+    input_field_placeholder="Chọn chức năng học tập..."
 )
 
 # --- LỆNH /START ---
@@ -49,69 +54,68 @@ async def command_start_handler(message: types.Message):
     
     # Lưu người dùng mới
     if str(user_id) not in data["users"]:
-        data["users"][str(user_id)] = {"name": name, "role": "guest", "balance": 0, "ref_count": 0}
+        data["users"][str(user_id)] = {"name": name, "role": "guest", "courses": []}
         save_data(data)
 
     if user_id == ADMIN_ID:
-        # Bàn phím Inline cho Admin (giữ nguyên để quản lý)
+        # Bàn phím Inline cho Admin (Gọn gàng để quản lý)
         admin_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📚 Quản lý Khóa học", callback_data="admin_courses")],
-            [InlineKeyboardButton(text="🖨 Máy in Code", callback_data="admin_codes")]
+            [InlineKeyboardButton(text="📚 Quản lý Khóa học & Giá", callback_data="admin_courses")],
+            [InlineKeyboardButton(text="🖨 Máy in Code", callback_data="admin_codes")],
+            [InlineKeyboardButton(text="👥 Theo dõi Học viên", callback_data="admin_users")],
+            [InlineKeyboardButton(text="📢 Gửi thông báo (Broadcast)", callback_data="admin_broadcast")]
         ])
-        await message.answer(f"👑 Chào Boss **{name}**!", reply_markup=admin_kb)
+        await message.answer(f"👑 Chào Boss tối cao **{name}**!\nBảng điều khiển dành riêng cho bạn:", reply_markup=admin_kb, parse_mode="Markdown")
     else:
-        # Hiển thị bàn phím nổi cho Khách/Học viên
+        # Khách/Học viên sẽ thấy bàn phím nổi dưới đáy
         await message.answer(
-            f"👋 Xin chào {name}!\nChào mừng bạn đến với hệ thống. Hãy chọn chức năng ở menu bên dưới nhé 👇", 
+            f"👋 Xin chào {name}!\nChào mừng bạn đến với Hệ thống Bot Bán Khóa Học tự động.\n\nHãy chọn chức năng ở menu bên dưới nhé 👇", 
             reply_markup=user_main_menu
         )
 
-# --- XỬ LÝ CÁC NÚT BẤM DƯỚI ĐÁY MÀN HÌNH ---
+# --- XỬ LÝ CÁC CHỨC NĂNG CỦA KHÁCH/HỌC VIÊN ---
 
-@dp.message(F.text == "💁‍♂️ Hỗ Trợ – CSKH")
-async def handle_support(message: types.Message):
-    # Gắn link trực tiếp tới Admin Thành Nam
+@dp.message(F.text == "📖 Bảng danh sách")
+async def show_courses(message: types.Message):
+    data = load_data()
+    courses_kb = InlineKeyboardMarkup(inline_keyboard=[])
+    
+    # Render động danh sách môn học từ data.json
+    for course_id, course_info in data["courses"].items():
+        courses_kb.inline_keyboard.append([
+            InlineKeyboardButton(text=f"{course_info['name']} - {course_info['price']:,}đ", callback_data=f"view_{course_id}")
+        ])
+    
+    await message.answer("📚 **Danh sách các môn học hiện có:**\nChọn một môn để xem chi tiết và thanh toán:", reply_markup=courses_kb, parse_mode="Markdown")
+
+@dp.message(F.text == "🔑 Nhập code")
+async def enter_code(message: types.Message):
+    await message.answer("🔑 Vui lòng nhập mã Code kích hoạt khóa học của bạn (Ví dụ: TOAN-12345):")
+    # Ghi chú: Phần check code thực tế sẽ code ở giai đoạn sau
+
+@dp.message(F.text == "💬 Tư vấn - CSKH")
+async def support_contact(message: types.Message):
     support_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💬 Nhắn tin cho Admin Thành Nam", url=f"https://t.me/{ADMIN_USERNAME}")]
     ])
     await message.answer(
         "👨‍💻 **Bộ phận CSKH - Hỗ trợ Trực tuyến**\n\n"
-        "Nếu bạn cần tư vấn mua khóa học, nạp tiền, hoặc gặp sự cố tài khoản, vui lòng nhấn nút bên dưới để chat trực tiếp với Admin nhé!",
+        "Nếu bạn cần tư vấn mua khóa học, chuyển khoản VietQR, hoặc gặp sự cố tài khoản, vui lòng nhấn nút bên dưới để chat trực tiếp với Admin nhé!",
         reply_markup=support_kb,
         parse_mode="Markdown"
     )
 
-@dp.message(F.text == "🎁 Code Tân Thủ")
-async def handle_newbie_code(message: types.Message):
-    await message.answer("Vui lòng nhập mã Code Tân Thủ của bạn (Ví dụ: TANTHU2024):")
-    # Ghi chú: Phần check code thực tế sẽ code sau
-
-@dp.message(F.text == "💎 Mời bạn nhận quà")
-async def handle_referral(message: types.Message):
-    user_id = message.from_user.id
-    ref_link = f"https://t.me/{(await bot.me()).username}?start={user_id}"
+@dp.message(F.text == "ℹ️ Giới thiệu")
+async def intro_system(message: types.Message):
     await message.answer(
-        f"🔗 **Link giới thiệu của bạn:**\n`{ref_link}`\n\n"
-        "Hãy gửi link này cho bạn bè, khi họ nhấn vào và sử dụng bot, bạn sẽ nhận được hoa hồng/quà tặng!",
+        "🎓 **Về Hệ thống Mini-LMS của chúng tôi**\n\n"
+        "Đây là nền tảng học tập tự động 24/7. Bạn có thể:\n"
+        "1️⃣ Dạo xem danh sách khóa học\n"
+        "2️⃣ Thanh toán tự động qua VietQR\n"
+        "3️⃣ Nhận Code và kích hoạt bài học ngay lập tức\n\n"
+        "Chúc bạn có một trải nghiệm học tập tuyệt vời!",
         parse_mode="Markdown"
     )
-
-@dp.message(F.text == "📊 Thống Kê TK")
-async def handle_stats(message: types.Message):
-    user_id = message.from_user.id
-    name = message.from_user.full_name
-    await message.answer(
-        f"👤 **Tài khoản:** {name}\n"
-        f"🆔 **ID:** `{user_id}`\n"
-        f"💰 **Khóa học đã mua:** 0\n"
-        f"👥 **Đã giới thiệu:** 0 người",
-        parse_mode="Markdown"
-    )
-
-@dp.message(F.text.in_({"👑 BXH hôm nay", "📈 Check Chia sẻ"}))
-async def handle_coming_soon(message: types.Message):
-    await message.answer("🚧 Tính năng đang được cập nhật. Vui lòng quay lại sau!")
-
 
 # --- GIỮ BOT CHẠY TRÊN RENDER ---
 async def handle(request):
