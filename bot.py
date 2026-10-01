@@ -541,3 +541,89 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+# ==========================================
+# 7. ĐƯỜNG ỐNG WEBHOOK SEPAY THÔNG MINH (ĐÃ SỬA LỖI AN TOÀN)
+# ==========================================
+async def auto_payment_webhook(request):
+    try:
+        data = await request.json()
+        transfer_content = data.get("content", "").upper()
+        amount = int(data.get("transferAmount", 0))
+        
+        if "MUAKHOA" in transfer_content:
+            # Tách chuỗi linh hoạt lấy ra ID số nằm sau chữ MUAKHOA
+            words = transfer_content.replace(",", " ").replace(".", " ").split()
+            user_id = None
+            for i, word in enumerate(words):
+                if word == "MUAKHOA" and i + 1 < len(words):
+                    user_id = words[i + 1]
+                    break
+            
+            if not user_id:
+                return web.json_response({"status": "Khong tim thay user_id"})
+                
+            db = load_data()
+            to_grant = []
+            item_name = ""
+            
+            # Check giá khớp môn lẻ
+            for cid, cinfo in db["courses"].items():
+                if amount == cinfo["price"]:
+                    to_grant = [cid]
+                    item_name = cinfo["name"]
+                    break
+            
+            # Check giá khớp Combo
+            if not to_grant:
+                for cid, cinfo in db.get("combos", {}).items():
+                    if amount == cinfo["price"]:
+                        to_grant = cinfo["course_ids"]
+                        item_name = cinfo["name"]
+                        break
+            
+            if not to_grant:
+                await bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ Cảnh báo: Giao dịch `{amount:,}đ` với nội dung `{transfer_content}` không khớp giá khóa học nào!")
+                return web.json_response({"status": "Khong khop gia"})
+            
+            if user_id in db["users"]:
+                # 1. CỐ GẮNG XÓA MÃ QR CŨ (Bọc try-except để không làm dừng chương trình nếu lỗi)
+                qr_msg_id = db["users"][user_id].get("qr_msg_id")
+                if qr_msg_id:
+                    try:
+                        await bot.delete_message(chat_id=int(user_id), message_id=qr_msg_id)
+                    except Exception:
+                        pass # Bỏ qua lỗi xóa tin nhắn cũ để tiếp tục nhả code
+                db["users"][user_id]["qr_msg_id"] = None
+                
+                # 2. CẤP QUYỀN KHÓA HỌC CHO KHÁCH
+                for cid in to_grant:
+                    if cid not in db["users"][user_id]["courses"]:
+                        db["users"][user_id]["courses"].append(cid)
+                db["users"][user_id]["role"] = "member"
+                
+                # 3. TẠO MÃ CODE VÀ LƯU LẠI
+                new_code = generate_random_code("AUTO")
+                db["codes"][new_code] = {"type": "auto", "id": "auto", "used": True}
+                save_data(db)
+                
+                # 4. GỬI TIN NHẮN NHẢ CODE CHO KHÁCH NGAY LẬP TỨC
+                msg_to_user = (
+                    f"🎉 **THANH TOÁN THÀNH CÔNG!**\n\n"
+                    f"💳 Hệ thống đã nhận được `{amount:,}đ`.\n"
+                    f"🎫 Mã Code kích hoạt của bạn là: `{new_code}`\n\n"
+                    f"✅ _Hệ thống đã tự động cấp quyền truy cập **{item_name}** cho bạn._\n\n"
+                    f"👉 **Hãy gõ lệnh /start để Menu hiện ra nút 🎓 Vào Học nhé!**"
+                )
+                await bot.send_message(chat_id=int(user_id), text=msg_to_user, parse_mode="Markdown")
+            
+            # 5. BÁO CHO ADMIN
+            await bot.send_message(chat_id=ADMIN_ID, text=f"🤑 **TIỀN VÀO!**\nKhách `{user_id}` chuyển `{amount:,}đ`.\n✅ Đã tự động cấp code và mở khóa: **{item_name}**.", parse_mode="Markdown")
+            
+        return web.json_response({"status": "success"})
+    except Exception as e:
+        # Báo lỗi về máy admin để dễ debug nếu có trục trặc code
+        try:
+            await bot.send_message(chat_id=ADMIN_ID, text=f"❌ Lỗi Webhook: {str(e)}")
+        except Exception:
+            pass
+        return web.json_response({"status": "error", "message": str(e)})
