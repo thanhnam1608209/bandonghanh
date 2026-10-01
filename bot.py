@@ -5,7 +5,7 @@ import random
 import string
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart, StateFilter
+from aiogram.filters import CommandStart, StateFilter, Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -148,6 +148,12 @@ async def command_start_handler(message: types.Message, state: FSMContext):
             reply_markup=get_user_menu(user_id)
         )
 
+# Lệnh hủy trạng thái khẩn cấp nếu bị kẹt
+@dp.message(Command("cancel"))
+async def cancel_handler(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("🔄 Đã thiết lập lại trạng thái bot. Bạn có thể bấm /start hoặc dùng bình thường.", reply_markup=get_user_menu(message.from_user.id))
+
 # ADMIN - QUẢN LÝ HỌC VIÊN
 @dp.callback_query(F.data == "admin_users_list")
 async def admin_users_list(callback: types.CallbackQuery):
@@ -184,7 +190,7 @@ async def ask_private_message(callback: types.CallbackQuery, state: FSMContext):
     target_uid = callback.data.split("_")[1]
     await state.update_data(private_target_uid=target_uid)
     await state.set_state(AdminStates.waiting_for_private_msg)
-    await callback.message.answer(f"✉️️ **GỬI TIN NHẮN CÁ NHÂN:**\nĐang gửi tới UID: `{target_uid}`\n👉 Nhập nội dung:", parse_mode="Markdown")
+    await callback.message.answer(f"✉️ **GỬI TIN NHẮN CÁ NHÂN:**\nĐang gửi tới UID: `{target_uid}`\n👉 Nhập nội dung (hoặc gõ /cancel để hủy):", parse_mode="Markdown")
     await callback.answer()
 
 @dp.message(StateFilter(AdminStates.waiting_for_private_msg))
@@ -425,9 +431,10 @@ async def admin_send_broadcast(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Đã gửi thông báo tổng tới {success} học viên!")
     await state.clear()
 
-# KHU VỰC HỌC TẬP & MUA HÀNG
+# KHU VỰC HỌC TẬP & MUA HÀNG (TỰ ĐỘNG XÓA TRẠNG THÁI KẸT KHI BẤM NÚT)
 @dp.message(F.text.startswith("🎓 Vào học"))
-async def student_learning_area(message: types.Message):
+async def student_learning_area(message: types.Message, state: FSMContext):
+    await state.clear() # Xóa mọi trạng thái kẹt
     user_id = str(message.from_user.id)
     cname = message.text.replace("🎓 Vào học ", "").strip()
     data = load_data()
@@ -438,13 +445,14 @@ async def student_learning_area(message: types.Message):
         return
     lessons = data["courses"][target_id].get("lessons", [])
     if not lessons:
-        await message.answer("🚧 Môn này chưa có bài giảng nào.")
+        await message.answer("🚧 Môn này chưa có bài giảng nào. Admin hãy vào Quản lý bài giảng để thêm nhé!")
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"▶ {l['name']}", url=l['link'])] for l in lessons])
     await message.answer(f"🎓 **{cname}**:", reply_markup=kb, parse_mode="Markdown")
 
 @dp.message(F.text == "📖 Bảng danh sách")
-async def show_courses(message: types.Message):
+async def show_courses(message: types.Message, state: FSMContext):
+    await state.clear() # Xóa mọi trạng thái kẹt
     data = load_data()
     kb = InlineKeyboardMarkup(inline_keyboard=[])
     for cid, cinfo in data.get("courses", {}).items():
@@ -485,11 +493,13 @@ async def process_course_view(callback: types.CallbackQuery):
     await callback.answer()
 
 @dp.message(F.text == "🔑 Nhập code")
-async def enter_code_prompt(message: types.Message):
+async def enter_code_prompt(message: types.Message, state: FSMContext):
+    await state.clear() # Xóa mọi trạng thái kẹt
     await message.answer("🔑 Nhập mã Code kích hoạt:")
 
 @dp.message(F.text.regexp(r'^[A-Z0-9-]+$'))
-async def check_code(message: types.Message):
+async def check_code(message: types.Message, state: FSMContext):
+    await state.clear()
     code = message.text.strip()
     data = load_data()
     if code in data["codes"]:
@@ -534,14 +544,16 @@ async def check_code(message: types.Message):
             await message.answer("❌ Mã không tồn tại.")
 
 @dp.message(F.text == "💬 Tư vấn - CSKH")
-async def support_contact(message: types.Message):
+async def support_contact(message: types.Message, state: FSMContext):
+    await state.clear()
     await message.answer("👨‍💻 Liên hệ Admin:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Chat Admin", url=f"https://t.me/{ADMIN_USERNAME}")]]))
 
 @dp.message(F.text == "ℹ️ Giới thiệu")
-async def intro_system(message: types.Message):
+async def intro_system(message: types.Message, state: FSMContext):
+    await state.clear()
     await message.answer(load_data().get("intro_text", "Mini-LMS"), parse_mode="Markdown")
 
-# ĐƯỜNG ỐNG WEBHOOK SEPAY (TỰ ĐỘNG CẤP QUYỀN VÀ LƯU VÀO KHO MÃ CHUẨN XÁC)
+# ĐƯỜNG ỐNG WEBHOOK SEPAY
 async def auto_payment_webhook(request):
     try:
         data = await request.json()
@@ -590,7 +602,6 @@ async def auto_payment_webhook(request):
             if str_uid not in db["users"]:
                 db["users"][str_uid] = {"name": "Học viên", "role": "member", "courses": [], "qr_msg_id": None, "last_active": datetime.now().isoformat()}
             
-            # Xóa mã QR cũ của khách
             qr_msg_id = db["users"][str_uid].get("qr_msg_id")
             if qr_msg_id:
                 try:
@@ -599,18 +610,15 @@ async def auto_payment_webhook(request):
                     pass 
             db["users"][str_uid]["qr_msg_id"] = None
             
-            # 1. Tự động cấp quyền trực tiếp vào UID của khách luôn
             for cid in to_grant:
                 if cid not in db["users"][str_uid]["courses"]:
                     db["users"][str_uid]["courses"].append(cid)
             db["users"][str_uid]["role"] = "member"
             
-            # 2. Vẫn tạo ra mã code thật và LƯU LẠI VÀO KHO MÃ để Admin làm sự kiện/event
             new_code = generate_random_code("EVT")
             db["codes"][new_code] = {"type": item_type, "id": matched_id, "used": False}
             save_data(db)
             
-            # Gửi tin nhắn thành công cho khách
             msg_to_user = (
                 f"🎉 **THANH TOÁN THÀNH CÔNG!**\n\n"
                 f"💳 Hệ thống đã nhận được `{amount:,}đ`.\n\n"
@@ -620,7 +628,7 @@ async def auto_payment_webhook(request):
             try:
                 await bot.send_message(chat_id=int(str_uid), text=msg_to_user, parse_mode="Markdown")
             except Exception as e:
-                await bot.send_message(chat_id=ADMIN_ID, text=f"⚠️️ Không thể gửi tin nhắn cho user {str_uid}: {str(e)}")
+                await bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ Không thể gửi tin nhắn cho user {str_uid}: {str(e)}")
             
             await bot.send_message(chat_id=ADMIN_ID, text=f"🤑 **TIỀN VÀO NỔ THÀNH CÔNG!**\nKhách `{str_uid}` chuyển `{amount:,}đ`.\n✅ Đã cấp quyền **{item_name}** vào UID.\n🎫 Đã sinh mã event lưu kho: `{new_code}`", parse_mode="Markdown")
             
