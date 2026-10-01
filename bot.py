@@ -143,6 +143,7 @@ async def command_start_handler(message: types.Message, state: FSMContext):
         ])
         await message.answer(f"👑 Chào Boss tối cao **{name}**!\nBảng điều khiển dành riêng cho bạn:", reply_markup=admin_kb, parse_mode="Markdown")
     else:
+        # Gửi menu kèm cập nhật quyền học viên ngay lập tức khi bấm /start
         await message.answer(
             f"👋 Xin chào {name}!\nChào mừng bạn đến với Hệ thống Bot Học tập.\n\nHãy chọn chức năng ở menu bên dưới nhé 👇", 
             reply_markup=get_user_menu(user_id)
@@ -316,7 +317,7 @@ async def ask_new_combo_price(message: types.Message, state: FSMContext):
     courses = [c.strip() for c in message.text.strip().split(',') if c.strip()]
     await state.update_data(combo_courses=courses)
     await state.set_state(AdminStates.waiting_for_combo_price)
-    await message.answer("💰 Nhập GIÁ COMBO (chỉ số):", parse_mode="Markdown")
+    await callback.message.answer("💰 Nhập GIÁ COMBO (chỉ số):", parse_mode="Markdown")
 
 @dp.message(StateFilter(AdminStates.waiting_for_combo_price))
 async def save_new_combo(message: types.Message, state: FSMContext):
@@ -367,7 +368,7 @@ async def ask_lesson_name(callback: types.CallbackQuery, state: FSMContext):
 async def ask_lesson_link(message: types.Message, state: FSMContext):
     await state.update_data(lesson_name=message.text.strip())
     await state.set_state(AdminStates.waiting_for_lesson_link)
-    await message.answer("🔗 Nhập LINK BÀI GIẢNG:", parse_mode="Markdown")
+    await callback.message.answer("🔗 Nhập LINK BÀI GIẢNG:", parse_mode="Markdown")
 
 @dp.message(StateFilter(AdminStates.waiting_for_lesson_link))
 async def save_new_lesson(message: types.Message, state: FSMContext):
@@ -505,8 +506,14 @@ async def check_code(message: types.Message):
                 to_grant = data["combos"][c_info["id"]]["course_ids"]
                 name = data["combos"][c_info["id"]]["name"]
             elif c_type == "auto":
-                to_grant = list(data["courses"].keys())[:1]
-                name = "Khóa học tự động"
+                # Lấy trực tiếp id môn được gán từ auto webhook
+                c_id = c_info.get("id")
+                if c_id in data["courses"]:
+                    to_grant = [c_id]
+                    name = data["courses"][c_id]["name"]
+                else:
+                    to_grant = list(data["courses"].keys())[:1]
+                    name = "Khóa học tự động"
             else:
                 c_id = c_info.get("course") or c_info.get("id")
                 to_grant = [c_id]
@@ -516,7 +523,12 @@ async def check_code(message: types.Message):
                 if cid not in data["users"][user_id]["courses"]:
                     data["users"][user_id]["courses"].append(cid)
             save_data(data)
-            await message.answer(f"🎉 Kích hoạt thành công **{name}**!", reply_markup=get_user_menu(user_id), parse_mode="Markdown")
+            
+            # Gửi menu có nút Vào Học ngay sau khi nhập code thành công
+            await message.answer(
+                f"🎉 **KÍCH HOẠT THÀNH CÔNG!**\nBạn đã sở hữu: **{name}**.\nMenu đã được cập nhật nút **🎓 Vào Học** ở bên dưới 👇", 
+                reply_markup=get_user_menu(user_id), parse_mode="Markdown"
+            )
     else:
         if len(code) > 4: 
             await message.answer("❌ Mã không tồn tại.")
@@ -529,7 +541,7 @@ async def support_contact(message: types.Message):
 async def intro_system(message: types.Message):
     await message.answer(load_data().get("intro_text", "Mini-LMS"), parse_mode="Markdown")
 
-# ĐƯỜNG ỐNG WEBHOOK SEPAY
+# ĐƯỜNG ỐNG WEBHOOK SEPAY (TỰ ĐỘNG CẤP QUYỀN VÀ LƯU Mã CODE CHUẨN XÁC)
 async def auto_payment_webhook(request):
     try:
         data = await request.json()
@@ -550,11 +562,13 @@ async def auto_payment_webhook(request):
             db = load_data()
             to_grant = []
             item_name = ""
+            matched_id = ""
             
             for cid, cinfo in db["courses"].items():
                 if amount == cinfo["price"]:
                     to_grant = [cid]
                     item_name = cinfo["name"]
+                    matched_id = cid
                     break
             
             if not to_grant:
@@ -562,6 +576,7 @@ async def auto_payment_webhook(request):
                     if amount == cinfo["price"]:
                         to_grant = cinfo["course_ids"]
                         item_name = cinfo["name"]
+                        matched_id = cid
                         break
             
             if not to_grant:
@@ -572,6 +587,7 @@ async def auto_payment_webhook(request):
             if str_uid not in db["users"]:
                 db["users"][str_uid] = {"name": "Học viên", "role": "member", "courses": [], "qr_msg_id": None, "last_active": datetime.now().isoformat()}
             
+            # Xóa mã QR cũ của khách
             qr_msg_id = db["users"][str_uid].get("qr_msg_id")
             if qr_msg_id:
                 try:
@@ -580,20 +596,23 @@ async def auto_payment_webhook(request):
                     pass 
             db["users"][str_uid]["qr_msg_id"] = None
             
+            # Cấp quyền trực tiếp luôn cho khách
             for cid in to_grant:
                 if cid not in db["users"][str_uid]["courses"]:
                     db["users"][str_uid]["courses"].append(cid)
             db["users"][str_uid]["role"] = "member"
             
+            # Lưu mã code vào database để phòng hờ khách thích nhập tay
             new_code = generate_random_code("AUTO")
-            db["codes"][new_code] = {"type": "auto", "id": "auto", "used": True}
+            db["codes"][new_code] = {"type": "auto", "id": matched_id, "used": True}
             save_data(db)
             
+            # Gửi tin nhắn thành công kèm hướng dẫn gõ /start để nhận menu có nút Vào Học
             msg_to_user = (
                 f"🎉 **THANH TOÁN THÀNH CÔNG!**\n\n"
                 f"💳 Hệ thống đã nhận được `{amount:,}đ`.\n"
-                f"🎫 Mã Code kích hoạt của bạn là: `{new_code}`\n\n"
-                f"✅ _Hệ thống đã tự động thu hồi mã QR và cấp quyền truy cập **{item_name}** cho bạn._\n\n"
+                f"🎫 Mã Code của bạn là: `{new_code}`\n\n"
+                f"✅ _Hệ thống đã tự động cấp quyền truy cập **{item_name}** cho bạn._\n\n"
                 f"👉 **Hãy gõ lệnh /start để Menu hiện ra nút 🎓 Vào Học nhé!**"
             )
             try:
@@ -601,7 +620,7 @@ async def auto_payment_webhook(request):
             except Exception as e:
                 await bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ Không thể gửi tin nhắn cho user {str_uid}: {str(e)}")
             
-            await bot.send_message(chat_id=ADMIN_ID, text=f"🤑 **TIỀN VÀO NỔ THÀNH CÔNG!**\nKhách `{str_uid}` chuyển `{amount:,}đ`.\n✅ Đã thu hồi QR và nhả code **{item_name}**.", parse_mode="Markdown")
+            await bot.send_message(chat_id=ADMIN_ID, text=f"🤑 **TIỀN VÀO NỔ THÀNH CÔNG!**\nKhách `{str_uid}` chuyển `{amount:,}đ`.\n✅ Đã mở khóa trực tiếp môn **{item_name}**.", parse_mode="Markdown")
             
         return web.json_response({"status": "success"})
     except Exception as e:
