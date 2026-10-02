@@ -12,7 +12,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiohttp import web
 
 # --- CẤU HÌNH TOKEN MỚI ---
-TOKEN = os.getenv("BOT_TOKEN", "8653171399:AAHz-Pt0olwmPYabflt4LUicSEsc8lFwc_o")
+TOKEN = "8653171399:AAHz-Pt0olwmPYabflt4LUicSEsc8lFwc_o"
 ADMIN_ID = 8956161451
 ADMIN_USERNAME = "thanhnam1608" 
 DATA_FILE = "data.json"
@@ -37,7 +37,7 @@ class AdminStates(StatesGroup):
     # Trạng thái quản lý Chương & Tệp bài giảng
     waiting_for_chapter_name = State()
     waiting_for_lesson_name = State()
-    waiting_for_lesson_link = State()
+    waiting_for_lesson_content = State() # Đổi từ link sang nội dung văn bản
 
 def load_data():
     if not os.path.exists(DATA_FILE):
@@ -101,16 +101,12 @@ def format_time_diff(last_active_str):
         last_active = datetime.fromisoformat(last_active_str)
         diff = datetime.now() - last_active
         seconds = int(diff.total_seconds())
-        if seconds < 60:
-            return "Vừa hoạt động"
+        if seconds < 60: return "Vừa hoạt động"
         minutes = seconds // 60
-        if minutes < 60:
-            return f"Không dùng {minutes} phút trước"
+        if minutes < 60: return f"Không dùng {minutes} phút trước"
         hours = minutes // 60
-        if hours < 24:
-            return f"Không dùng {hours} giờ trước"
-        days = hours // 24
-        return f"Không dùng {days} ngày trước"
+        if hours < 24: return f"Không dùng {hours} giờ trước"
+        return f"Không dùng {hours // 24} ngày trước"
     except Exception:
         return "Không rõ"
 
@@ -125,13 +121,7 @@ async def command_start_handler(message: types.Message, state: FSMContext):
     now_iso = datetime.now().isoformat()
 
     if str_uid not in data["users"]:
-        data["users"][str_uid] = {
-            "name": name, 
-            "role": "guest", 
-            "courses": [], 
-            "qr_msg_id": None, 
-            "last_active": now_iso
-        }
+        data["users"][str_uid] = {"name": name, "role": "guest", "courses": [], "qr_msg_id": None, "last_active": now_iso}
     else:
         data["users"][str_uid]["name"] = name
         data["users"][str_uid]["last_active"] = now_iso
@@ -149,17 +139,14 @@ async def command_start_handler(message: types.Message, state: FSMContext):
         ])
         await message.answer(f"👑 Chào Boss tối cao **{name}**!\nBảng điều khiển dành riêng cho bạn:", reply_markup=admin_kb, parse_mode="Markdown")
     else:
-        await message.answer(
-            f"👋 Xin chào {name}!\nChào mừng bạn đến với Hệ thống Bot Học tập.\n\nHãy chọn chức năng ở menu bên dưới nhé 👇", 
-            reply_markup=get_user_menu(user_id)
-        )
+        await message.answer(f"👋 Xin chào {name}!\nChào mừng bạn đến với Hệ thống Bot Học tập.\n\nHãy chọn chức năng ở menu bên dưới nhé 👇", reply_markup=get_user_menu(user_id))
 
 @dp.message(Command("cancel"))
 async def cancel_handler(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("🔄 Đã hủy trạng thái hiện tại. Gõ /start để về menu chính.", reply_markup=get_user_menu(message.from_user.id))
 
-# QUẢN LÝ TÀI LIỆU & BÀI GIẢNG (MÔN -> CHƯƠNG -> TỆP)
+# --- QUẢN LÝ TÀI LIỆU (NHẬP NỘI DUNG TRỰC TIẾP) ---
 @dp.callback_query(F.data == "admin_manage_chapters")
 async def admin_manage_chapters(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID: return
@@ -222,15 +209,31 @@ async def view_chapter_details(callback: types.CallbackQuery):
     text = f"📑 **Chương: {chap['chapter_name']}**\n\n"
     if lessons:
         for l_idx, lesson in enumerate(lessons):
-            text += f"▪️ {l_idx+1}. {lesson['name']}\n   🔗 {lesson['link']}\n"
-            kb.inline_keyboard.append([InlineKeyboardButton(text=f"❌ Xóa tệp: {lesson['name'][:15]}...", callback_data=f"dellesson_{course_id}_{chap_idx}_{l_idx}")])
+            text += f"▪️ {l_idx+1}. {lesson['name']}\n"
+            kb.inline_keyboard.append([InlineKeyboardButton(text=f"❌ Xóa bài: {lesson['name'][:12]}...", callback_data=f"dellesson_{course_id}_{chap_idx}_{l_idx}")])
     else:
         text += "_Chưa có tệp bài giảng nào._\n"
         
-    kb.inline_keyboard.append([InlineKeyboardButton(text="➕ Thêm Tệp Bài Giảng", callback_data=f"addlesson_{course_id}_{chap_idx}")])
+    kb.inline_keyboard.append([InlineKeyboardButton(text="➕ Thêm Bài Học / Công Thức", callback_data=f"addlesson_{course_id}_{chap_idx}")])
+    kb.inline_keyboard.append([InlineKeyboardButton(text="🗑 XÓA CHƯƠNG NÀY", callback_data=f"delchap_{course_id}_{chap_idx}")])
     kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Quay lại", callback_data=f"ch_course_{course_id}")])
     
     await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("delchap_"))
+async def delete_chapter_item(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: return
+    parts = callback.data.split("_")
+    course_id = parts[1]
+    chap_idx = int(parts[2])
+    
+    db = load_data()
+    chapters = db["courses"][course_id]["chapters"]
+    if 0 <= chap_idx < len(chapters):
+        removed = chapters.pop(chap_idx)
+        save_data(db)
+        await callback.message.answer(f"🗑 Đã xóa toàn bộ chương: **{removed['chapter_name']}**")
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("addlesson_"))
@@ -239,22 +242,36 @@ async def ask_lesson_name(callback: types.CallbackQuery, state: FSMContext):
     parts = callback.data.split("_")
     await state.update_data(lesson_course_id=parts[1], lesson_chap_idx=int(parts[2]))
     await state.set_state(AdminStates.waiting_for_lesson_name)
-    await callback.message.answer("📝 Nhập **TÊN TỆP BÀI GIẢNG / TÀI LIỆU**:", parse_mode="Markdown")
+    await callback.message.answer("📝 Bước 1: Nhập **TÊN BÀI HỌC** (Ví dụ: Định lý Vi-ét):", parse_mode="Markdown")
     await callback.answer()
 
 @dp.message(StateFilter(AdminStates.waiting_for_lesson_name))
-async def ask_lesson_link(message: types.Message, state: FSMContext):
+async def ask_lesson_content(message: types.Message, state: FSMContext):
     await state.update_data(lesson_name=message.text.strip())
-    await state.set_state(AdminStates.waiting_for_lesson_link)
-    await message.answer("🔗 Nhập **LINK TRÌNH BÀY / ĐƯỜNG DẪN TÀI LIỆU**:", parse_mode="Markdown")
+    await state.set_state(AdminStates.waiting_for_lesson_content)
+    
+    hint_text = (
+        "📝 Bước 2: Nhập **NỘI DUNG BÀI HỌC / CÔNG THỨC**.\n\n"
+        "Bạn có thể gõ nội dung dài, công thức, ví dụ cách áp dụng và xuống dòng thoải mái. "
+        "Mẹo:\n"
+        "▪️ Bôi đậm: `**Nội dung**`\n"
+        "▪️ In nghiêng: `_Nội dung_`\n"
+        "▪️ Khung code: \n\\`\\`\\`\nCông thức ở đây\n\\`\\`\\`"
+    )
+    await message.answer(hint_text, parse_mode="Markdown")
 
-@dp.message(StateFilter(AdminStates.waiting_for_lesson_link))
+@dp.message(StateFilter(AdminStates.waiting_for_lesson_content))
 async def save_new_lesson(message: types.Message, state: FSMContext):
     user_data = await state.get_data()
     db = load_data()
-    db["courses"][user_data["lesson_course_id"]]["chapters"][user_data["lesson_chap_idx"]]["lessons"].append({"name": user_data["lesson_name"], "link": message.text.strip()})
+    
+    # Lưu nội dung trực tiếp (content) thay vì link
+    db["courses"][user_data["lesson_course_id"]]["chapters"][user_data["lesson_chap_idx"]]["lessons"].append({
+        "name": user_data["lesson_name"], 
+        "content": message.text.strip()
+    })
     save_data(db)
-    await message.answer("✅ Đã thêm tệp bài giảng thành công!", parse_mode="Markdown")
+    await message.answer("✅ Đã lưu bài học thành công!", parse_mode="Markdown")
     await state.clear()
 
 @dp.callback_query(F.data.startswith("dellesson_"))
@@ -266,10 +283,10 @@ async def delete_lesson_item(callback: types.CallbackQuery):
     if 0 <= int(parts[3]) < len(lessons):
         lessons.pop(int(parts[3]))
         save_data(db)
-        await callback.message.answer("🗑 Đã xóa tệp thành công!")
+        await callback.message.answer("🗑 Đã xóa bài học thành công!")
     await callback.answer()
 
-# ADMIN - HỌC VIÊN, MÔN LẺ, COMBO, IN CODE, BROADCAST
+# --- CÁC TÍNH NĂNG ADMIN KHÁC GIỮ NGUYÊN ---
 @dp.callback_query(F.data == "admin_users_list")
 async def admin_users_list(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID: return
@@ -345,7 +362,7 @@ async def ask_new_course_id(callback: types.CallbackQuery, state: FSMContext):
 async def ask_new_course_name(message: types.Message, state: FSMContext):
     await state.update_data(new_course_id=message.text.strip())
     await state.set_state(AdminStates.waiting_for_new_course_name)
-    await message.answer("📝 Nhập TÊN MÔN HỌC:", parse_mode="Markdown")
+    await callback.message.answer("📝 Nhập TÊN MÔN HỌC:", parse_mode="Markdown")
 
 @dp.message(StateFilter(AdminStates.waiting_for_new_course_name))
 async def ask_new_course_price(message: types.Message, state: FSMContext):
@@ -469,7 +486,7 @@ async def admin_send_broadcast(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Đã gửi tới {success} học viên!", parse_mode="Markdown")
     await state.clear()
 
-# HỌC VIÊN XEM TÀI LIỆU
+# --- KHU VỰC HỌC TẬP: ĐỌC NỘI DUNG VÀ KHÓA CHỐNG COPY ---
 @dp.message(F.text.startswith("🎓 Vào học"))
 async def student_learning_area(message: types.Message, state: FSMContext):
     await state.clear()
@@ -486,22 +503,41 @@ async def student_learning_area(message: types.Message, state: FSMContext):
     chapters = course_info.get("chapters", [])
     
     if not chapters:
-        lessons = course_info.get("lessons", [])
-        if not lessons:
-            await message.answer("🚧 Môn học này đang cập nhật tài liệu.")
-            return
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"▶ {l['name']}", url=l['link'])] for l in lessons])
-        await message.answer(f"🎓 **{cname}**: Tài liệu", reply_markup=kb, parse_mode="Markdown")
+        await message.answer("🚧 Môn học này đang cập nhật tài liệu.")
         return
 
-    text = f"🎓 **KHU VỰC HỌC TẬP: {cname}**\nDanh sách chương và tài liệu:\n"
+    text = f"🎓 **KHU VỰC HỌC TẬP: {cname}**\nBấm vào bài học để đọc nội dung:\n"
     kb = InlineKeyboardMarkup(inline_keyboard=[])
-    for chap in chapters:
+    for chap_idx, chap in enumerate(chapters):
         kb.inline_keyboard.append([InlineKeyboardButton(text=f"📂 --- {chap['chapter_name']} ---", callback_data="ignore")])
-        for lesson in chap.get("lessons", []):
-            kb.inline_keyboard.append([InlineKeyboardButton(text=f"📄 {lesson['name']}", url=lesson['link'])])
+        for l_idx, lesson in enumerate(chap.get("lessons", [])):
+            # Chuyển từ nút bấm URL (mở link) sang nút Callback (đọc bài)
+            kb.inline_keyboard.append([InlineKeyboardButton(text=f"📖 {lesson['name']}", callback_data=f"readlesson_{target_id}_{chap_idx}_{l_idx}")])
             
     await message.answer(text, reply_markup=kb, parse_mode="Markdown")
+
+# Xử lý hiển thị nội dung bài học khi học viên bấm nút
+@dp.callback_query(F.data.startswith("readlesson_"))
+async def read_lesson_content(callback: types.CallbackQuery):
+    parts = callback.data.split("_")
+    course_id = parts[1]
+    chap_idx = int(parts[2])
+    l_idx = int(parts[3])
+    
+    db = load_data()
+    try:
+        lesson = db["courses"][course_id]["chapters"][chap_idx]["lessons"][l_idx]
+        
+        # Lấy nội dung hoặc link cũ để hiển thị
+        content = lesson.get("content", lesson.get("link", "Nội dung đang được cập nhật."))
+        
+        display_text = f"📚 **{lesson['name']}**\n\n{content}"
+        
+        # protect_content=True: NGĂN CHẶN FORWARD, LƯU VÀ CHỤP MÀN HÌNH TRÊN ĐIỆN THOẠI
+        await callback.message.answer(display_text, parse_mode="Markdown", protect_content=True)
+    except Exception as e:
+        await callback.answer(f"Lỗi hiển thị bài học.", show_alert=True)
+    await callback.answer()
 
 @dp.message(F.text == "📖 Bảng danh sách")
 async def show_courses(message: types.Message, state: FSMContext):
@@ -584,7 +620,7 @@ async def check_code(message: types.Message, state: FSMContext):
 @dp.message(F.text == "💬 Tư vấn - CSKH")
 async def support_contact(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("👨‍💻 Liên hệ Admin:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Chat Admin", url=f"https://t.me/{ADMIN_USERNAME}")]]))
+    await message.answer("👨‍‍💻 Liên hệ Admin:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Chat Admin", url=f"https://t.me/{ADMIN_USERNAME}")]]))
 
 @dp.message(F.text == "ℹ️ Giới thiệu")
 async def intro_system(message: types.Message, state: FSMContext):
