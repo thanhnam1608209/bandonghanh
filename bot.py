@@ -143,7 +143,7 @@ async def cancel_handler(message: types.Message, state: FSMContext):
     await message.answer("🔄 Đã hủy trạng thái hiện tại. Gõ /start để về menu chính.", reply_markup=get_user_menu(message.from_user.id))
 
 # ==========================================
-# 1. QUẢN LÝ TÀI LIỆU (CHƯƠNG & BÀI HỌC)
+# 1. QUẢN LÝ TÀI LIỆU (CHƯƠNG & BÀI HỌC CÓ ẢNH)
 # ==========================================
 @dp.callback_query(F.data == "admin_manage_chapters")
 async def admin_manage_chapters(callback: types.CallbackQuery):
@@ -237,15 +237,37 @@ async def ask_lesson_name(callback: types.CallbackQuery, state: FSMContext):
 async def ask_lesson_content(message: types.Message, state: FSMContext):
     await state.update_data(lesson_name=message.text.strip())
     await state.set_state(AdminStates.waiting_for_lesson_content)
-    await message.answer("📝 Nhập **NỘI DUNG BÀI HỌC / CÔNG THỨC** (Dùng Markdown: in đậm, in nghiêng, vv):", parse_mode="Markdown")
+    
+    hint_text = (
+        "📝 Nhập **NỘI DUNG BÀI HỌC / CÔNG THỨC**.\n\n"
+        "💡 **MỚI:** BẠN CÓ THỂ **GỬI 1 BỨC ẢNH** (kèm nội dung ghi ở phần chú thích ảnh) HOẶC **Gõ văn bản thô** đều được.\n\n"
+        "Mẹo định dạng:\n"
+        "▪️ Bôi đậm: `**Nội dung**`\n"
+        "▪️ In nghiêng: `_Nội dung_`\n"
+    )
+    await message.answer(hint_text, parse_mode="Markdown")
 
+# Hỗ trợ nhận diện cả ẢNH và TEXT
 @dp.message(StateFilter(AdminStates.waiting_for_lesson_content))
 async def save_new_lesson(message: types.Message, state: FSMContext):
     user_data = await state.get_data()
     db = load_data()
+    
+    photo_id = None
+    content = ""
+    
+    if message.photo:
+        photo_id = message.photo[-1].file_id # Lấy ảnh nét nhất
+        content = message.caption or "" # Lấy chữ chú thích dưới ảnh (nếu có)
+    else:
+        content = message.text or ""
+
     db["courses"][user_data["lesson_course_id"]]["chapters"][user_data["lesson_chap_idx"]]["lessons"].append({
-        "name": user_data["lesson_name"], "content": message.text.strip()
+        "name": user_data["lesson_name"], 
+        "content": content.strip(),
+        "photo_id": photo_id
     })
+    
     save_data(db)
     await message.answer("✅ Đã lưu bài học thành công!", parse_mode="Markdown")
     await state.clear()
@@ -488,7 +510,7 @@ async def save_new_combo(message: types.Message, state: FSMContext):
     await state.clear()
 
 # ==========================================
-# CÁC TÍNH NĂNG ADMIN KHÁC (GIỮ NGUYÊN)
+# CÁC TÍNH NĂNG ADMIN KHÁC
 # ==========================================
 @dp.callback_query(F.data == "admin_users_list")
 async def admin_users_list(callback: types.CallbackQuery):
@@ -509,7 +531,7 @@ async def ask_private_message(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID: return
     await state.update_data(private_target_uid=callback.data.split("_")[1])
     await state.set_state(AdminStates.waiting_for_private_msg)
-    await callback.message.answer("✉️ Nhập nội dung tin nhắn riêng:", parse_mode="Markdown")
+    await callback.message.answer("✉️️ Nhập nội dung tin nhắn riêng:", parse_mode="Markdown")
     await callback.answer()
 
 @dp.message(StateFilter(AdminStates.waiting_for_private_msg))
@@ -581,7 +603,7 @@ async def admin_send_broadcast(message: types.Message, state: FSMContext):
     await state.clear()
 
 # ==========================================
-# KHU VỰC HỌC TẬP VÀ THANH TOÁN
+# KHU VỰC HỌC TẬP VÀ THANH TOÁN (CÓ HỖ TRỢ XEM ẢNH)
 # ==========================================
 @dp.message(F.text.startswith("🎓 Vào học"))
 async def student_learning_area(message: types.Message, state: FSMContext):
@@ -606,16 +628,37 @@ async def student_learning_area(message: types.Message, state: FSMContext):
             
     await message.answer(text, reply_markup=kb, parse_mode="Markdown")
 
+# Xử lý khi học viên bấm nút Đọc bài giảng (Phân tích xem có ẢNH hay TEXT)
 @dp.callback_query(F.data.startswith("readlesson_"))
 async def read_lesson_content(callback: types.CallbackQuery):
     parts = callback.data.split("_")
     db = load_data()
     try:
         lesson = db["courses"][parts[1]]["chapters"][int(parts[2])]["lessons"][int(parts[3])]
-        content = lesson.get("content", lesson.get("link", "Nội dung đang cập nhật."))
-        display_text = f"📚 **{lesson['name']}**\n\n{content}"
-        await callback.message.answer(display_text, parse_mode="Markdown", protect_content=True)
-    except Exception: await callback.answer("Lỗi hiển thị bài học.", show_alert=True)
+        content = lesson.get("content", lesson.get("link", ""))
+        photo_id = lesson.get("photo_id")
+        
+        display_text = f"📚 **{lesson['name']}**"
+        if content:
+            display_text += f"\n\n{content}"
+        
+        # Nếu bài học CÓ ẢNH
+        if photo_id:
+            if len(display_text) <= 1024:
+                # Nếu text ngắn, gửi Ảnh kèm Text làm Caption
+                await callback.message.answer_photo(photo=photo_id, caption=display_text, parse_mode="Markdown", protect_content=True)
+            else:
+                # Nếu text dài, gửi Ảnh riêng và Text riêng biệt
+                await callback.message.answer_photo(photo=photo_id, protect_content=True)
+                await callback.message.answer(display_text, parse_mode="Markdown", protect_content=True)
+        # Nếu bài học CHỈ CÓ CHỮ
+        else:
+            if not content:
+                display_text += "\n\n_Nội dung đang cập nhật._"
+            await callback.message.answer(display_text, parse_mode="Markdown", protect_content=True)
+            
+    except Exception as e: 
+        await callback.answer("Lỗi hiển thị bài học.", show_alert=True)
     await callback.answer()
 
 @dp.message(F.text == "📖 Bảng danh sách")
@@ -646,7 +689,7 @@ async def process_course_view(callback: types.CallbackQuery):
         f"📘 **{info['name']}**\n💰 **Giá:** `{price:,} VNĐ`\n\n"
         f"🏦 **QUÉT MÃ THANH TOÁN TỰ ĐỘNG:**\n"
         f"▪️ Ngân hàng: **MB Bank**\n"
-        f"▪️ STK: **0812847035**\n"
+        f"▪️️ STK: **0812847035**\n"
         f"▪️ Nội dung: `{transfer_content}`\n\n"
         f"⏳ _Chuyển khoản xong QR sẽ tự biến mất và cấp quyền học tự động!_"
     )
@@ -663,10 +706,11 @@ async def enter_code_prompt(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("🔑 Nhập mã Code kích hoạt:")
 
-@dp.message(F.text.regexp(r'^[A-Z0-9-]+$'))
+# Bộ lọc thông minh: Bất chấp khách copy dính dấu cách hoặc ghi chữ thường
+@dp.message(F.text.regexp(r'^\s*[a-zA-Z0-9-]+\s*$'))
 async def check_code(message: types.Message, state: FSMContext):
     await state.clear()
-    code = message.text.strip()
+    code = message.text.strip().upper() 
     data = load_data()
     if code in data["codes"]:
         c_info = data["codes"][code]
