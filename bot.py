@@ -11,7 +11,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiohttp import web
 
-TOKEN = os.getenv("BOT_TOKEN", "8783875910:AAG8-oIXhhxzn4hE1vx46mayPYiyOJalSYw")
+# --- CẤU HÌNH TOKEN MỚI CHÍNH CHỦ ---
+TOKEN = os.getenv("BOT_TOKEN", "8653171399:AAHz-Pt0olwmPYabflt4LUicSEsc8lFwc_o")
 ADMIN_ID = 8956161451
 ADMIN_USERNAME = "thanhnam1608" 
 DATA_FILE = "data.json"
@@ -22,8 +23,6 @@ dp = Dispatcher()
 class AdminStates(StatesGroup):
     waiting_for_broadcast = State()
     waiting_for_new_price = State()
-    waiting_for_lesson_name = State()
-    waiting_for_lesson_link = State()
     waiting_for_edit_course_name = State()
     waiting_for_new_course_id = State()
     waiting_for_new_course_name = State()
@@ -34,14 +33,19 @@ class AdminStates(StatesGroup):
     waiting_for_combo_courses = State()
     waiting_for_combo_price = State()
     waiting_for_private_msg = State()
+    
+    # Trạng thái quản lý Chương & Tệp bài giảng mới
+    waiting_for_chapter_name = State()
+    waiting_for_lesson_name = State()
+    waiting_for_lesson_link = State()
 
 def load_data():
     if not os.path.exists(DATA_FILE):
         default_data = {
             "users": {},
             "courses": {
-                "Toan": {"name": "Môn Toán", "price": 3000, "lessons": []},
-                "Van": {"name": "Môn Văn", "price": 50000, "lessons": []}
+                "Toan": {"name": "Môn Toán", "price": 3000, "chapters": []},
+                "Van": {"name": "Môn Văn", "price": 50000, "chapters": []}
             },
             "combos": {},
             "codes": {},
@@ -57,10 +61,13 @@ def load_data():
             data["combos"] = {}
         if "courses" not in data:
             data["courses"] = {}
-        if "users" not in data:
-            data["users"] = {}
-        if "codes" not in data:
-            data["codes"] = {}
+        # Tương thích ngược chuyển đổi từ "lessons" cũ sang cấu trúc "chapters" mới nếu cần
+        for cid, cinfo in data["courses"].items():
+            if "lessons" in cinfo and "chapters" not in cinfo:
+                cinfo["chapters"] = [{"chapter_name": "Tài liệu chung", "lessons": cinfo["lessons"]}]
+                del cinfo["lessons"]
+            if "chapters" not in cinfo:
+                cinfo["chapters"] = []
         return data
 
 def save_data(data):
@@ -135,8 +142,8 @@ async def command_start_handler(message: types.Message, state: FSMContext):
         admin_kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📚 Quản lý Môn học (Lẻ)", callback_data="admin_courses"),
              InlineKeyboardButton(text="📦 Quản lý Combo (Gộp)", callback_data="admin_combos")],
-            [InlineKeyboardButton(text="📂 Quản lý Bài giảng", callback_data="admin_lessons"),
-             InlineKeyboardButton(text="📝 Sửa phần Giới thiệu", callback_data="edit_intro")],
+            [InlineKeyboardButton(text="📂 Quản lý Tài liệu & Bài giảng", callback_data="admin_manage_chapters")],
+            [InlineKeyboardButton(text="📝 Sửa phần Giới thiệu", callback_data="edit_intro")],
             [InlineKeyboardButton(text="👥 Quản lý Học viên & Thời gian", callback_data="admin_users_list")],
             [InlineKeyboardButton(text="🖨 Máy in Code", callback_data="admin_print_codes")],
             [InlineKeyboardButton(text="📢 Thông báo Tổng", callback_data="admin_broadcast")]
@@ -148,39 +155,172 @@ async def command_start_handler(message: types.Message, state: FSMContext):
             reply_markup=get_user_menu(user_id)
         )
 
-# Lệnh hủy trạng thái khẩn cấp nếu bị kẹt
 @dp.message(Command("cancel"))
 async def cancel_handler(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("🔄 Đã thiết lập lại trạng thái bot. Bạn có thể bấm /start hoặc dùng bình thường.", reply_markup=get_user_menu(message.from_user.id))
+    await message.answer("🔄 Đã hủy trạng thái hiện tại. Gõ /start để về menu chính.", reply_markup=get_user_menu(message.from_user.id))
 
-# ADMIN - QUẢN LÝ HỌC VIÊN
+# ==========================================
+# QUẢN LÝ TÀI LIỆU & BÀI GIẢNG (THEO CẤU TRÚC: MÔN -> CHƯƠNG -> TỆP BÀI GIẢNG)
+# ==========================================
+@dp.callback_query(F.data == "admin_manage_chapters")
+async def admin_manage_chapters(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: return
+    data = load_data()
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    for cid, cinfo in data["courses"].items():
+        kb.inline_keyboard.append([InlineKeyboardButton(text=f"📂 {cinfo['name']}", callback_data=f"ch_course_{cid}")])
+    await callback.message.answer("📁 **QUẢN LÝ TÀI LIỆU & BÀI GIẢNG:**\nChọn môn học bạn muốn thêm/sửa chương và tệp bài giảng:", reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("ch_course_"))
+async def admin_select_course_chapters(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: return
+    course_id = callback.data.split("ch_course_")[1]
+    data = load_data()
+    course = data["courses"].get(course_id)
+    if not course: return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    chapters = course.get("chapters", [])
+    
+    for idx, chap in enumerate(chapters):
+        kb.inline_keyboard.append([InlineKeyboardButton(text=f"📑 {chap['chapter_name']} ({len(chap.get('lessons', []))} tệp)", callback_data=f"view_chap_{course_id}_{idx}")])
+    
+    kb.inline_keyboard.append([InlineKeyboardButton(text="➕ Thêm Chương Mới", callback_data=f"add_chap_{course_id}")])
+    kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️️ Quay lại", callback_data="admin_manage_chapters")])
+    
+    await callback.message.answer(f"📚 **Môn: {course['name']}**\nDanh sách các Chương tài liệu:", reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+# Thêm Chương mới
+@dp.callback_query(F.data.startswith("add_chap_"))
+async def ask_chapter_name(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID: return
+    course_id = callback.data.split("add_chap_")[1]
+    await state.update_data(chap_course_id=course_id)
+    await state.set_state(AdminStates.waiting_for_chapter_name)
+    await callback.message.answer("📝 Vui lòng nhập **Tên Chương / Lớp tài liệu** mới:\n_(Ví dụ: Chương 1: Đạo hàm cơ bản)_", parse_mode="Markdown")
+    await callback.answer()
+
+@dp.message(StateFilter(AdminStates.waiting_for_chapter_name))
+async def save_new_chapter(message: types.Message, state: FSMContext):
+    chap_name = message.text.strip()
+    user_data = await state.get_data()
+    course_id = user_data["chap_course_id"]
+    
+    db = load_data()
+    if "chapters" not in db["courses"][course_id]:
+        db["courses"][course_id]["chapters"] = []
+    db["courses"][course_id]["chapters"].append({"chapter_name": chap_name, "lessons": []})
+    save_data(db)
+    
+    await message.answer(f"✅ Đã thêm chương **{chap_name}** thành công!", parse_mode="Markdown")
+    await state.clear()
+
+# Xem chi tiết chương và danh sách tệp bài giảng bên trong
+@dp.callback_query(F.data.startswith("view_chap_"))
+async def view_chapter_details(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: return
+    parts = callback.data.split("_")
+    course_id = parts[2]
+    chap_idx = int(parts[3])
+    
+    data = load_data()
+    course = data["courses"].get(course_id)
+    chap = course["chapters"][chap_idx]
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    lessons = chap.get("lessons", [])
+    
+    text = f"📑 **Chương: {chap['chapter_name']}**\n\n"
+    if lessons:
+        for l_idx, lesson in enumerate(lessons):
+            text += f"▪️ {l_idx+1}. {lesson['name']}\n   🔗 {lesson['link']}\n"
+            kb.inline_keyboard.append([InlineKeyboardButton(text=f"❌ Xóa tệp: {lesson['name'][:15]}...", callback_data=f"dellesson_{course_id}_{chap_idx}_{l_idx}")])
+    else:
+        text += "_Chương này chưa có tệp bài giảng nào._\n"
+        
+    kb.inline_keyboard.append([InlineKeyboardButton(text="➕ Thêm Tệp Bài Giảng vào Chương này", callback_data=f"addlesson_{course_id}_{chap_idx}")])
+    kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Quay lại danh sách chương", callback_data=f"ch_course_{course_id}")])
+    
+    await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+# Thêm Tệp Bài Giảng vào Chương cụ thể
+@dp.callback_query(F.data.startswith("addlesson_"))
+async def ask_lesson_name(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID: return
+    parts = callback.data.split("_")
+    course_id = parts[1]
+    chap_idx = parts[2]
+    
+    await state.update_data(lesson_course_id=course_id, lesson_chap_idx=int(chap_idx))
+    await state.set_state(AdminStates.waiting_for_lesson_name)
+    await callback.message.answer("📝 **Bước 1:** Nhập TÊN TỆP BÀI GIẢNG / TÀI LIỆU:\n_(Ví dụ: Bài 1: Video Lý Thuyết.mp4 hoặc Slide PDF)_", parse_mode="Markdown")
+    await callback.answer()
+
+@dp.message(StateFilter(AdminStates.waiting_for_lesson_name))
+async def ask_lesson_link(message: types.Message, state: FSMContext):
+    await state.update_data(lesson_name=message.text.strip())
+    await state.set_state(AdminStates.waiting_for_lesson_link)
+    await message.answer("🔗 **Bước 2:** Nhập LINK TRÌNH BÀY / ĐƯỜNG DẪN TÀI LIỆU:\n_(Ví dụ: https://youtu.be/... hoặc link Google Drive)_", parse_mode="Markdown")
+
+@dp.message(StateFilter(AdminStates.waiting_for_lesson_link))
+async def save_new_lesson(message: types.Message, state: FSMContext):
+    lesson_link = message.text.strip()
+    user_data = await state.get_data()
+    course_id = user_data["lesson_course_id"]
+    chap_idx = user_data["lesson_chap_idx"]
+    lesson_name = user_data["lesson_name"]
+    
+    db = load_data()
+    db["courses"][course_id]["chapters"][chap_idx]["lessons"].append({"name": lesson_name, "link": lesson_link})
+    save_data(db)
+    
+    await message.answer(f"✅ Đã thêm tệp **{lesson_name}** thành công vào chương!", parse_mode="Markdown")
+    await state.clear()
+
+# Xóa tệp bài giảng
+@dp.callback_query(F.data.startswith("dellesson_"))
+async def delete_lesson_item(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: return
+    parts = callback.data.split("_")
+    course_id = parts[1]
+    chap_idx = int(parts[2])
+    l_idx = int(parts[3])
+    
+    db = load_data()
+    lessons = db["courses"][course_id]["chapters"][chap_idx]["lessons"]
+    if 0 <= l_idx < len(lessons):
+        removed = lessons.pop(l_idx)
+        save_data(db)
+        await callback.message.answer(f"🗑 Đã xóa tệp: **{removed['name']}**")
+    await callback.answer()
+
+# ==========================================
+# CÁC TÍNH NĂNG QUẢN LÝ KHÁC (HỌC VIÊN, MÔN LẺ, COMBO, IN CODE, BROADCAST)
+# ==========================================
 @dp.callback_query(F.data == "admin_users_list")
 async def admin_users_list(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID: return
     data = load_data()
     users = data.get("users", {})
-    
     if not users:
-        await callback.message.answer("👥 Hệ thống chưa có học viên nào.")
+        await callback.message.answer("👥 Chưa có học viên nào.")
         await callback.answer()
         return
 
     kb = InlineKeyboardMarkup(inline_keyboard=[])
     text_summary = f"👥 **DANH SÁCH HỌC VIÊN ({len(users)} người):**\n\n"
-    
     for uid, info in users.items():
         name = info.get("name", "Không rõ")
-        last_active = info.get("last_active", "")
-        time_status = format_time_diff(last_active)
+        time_status = format_time_diff(info.get("last_active", ""))
         courses_count = len(info.get("courses", []))
-        
         text_summary += f"▪️ **{name}**\n   ├ UID: `{uid}`\n   ├ Đã mua: {courses_count} môn\n   └ Trạng thái: _{time_status}_\n\n"
         kb.inline_keyboard.append([InlineKeyboardButton(text=f"✉️ Nhắn riêng {name}", callback_data=f"privatemsg_{uid}")])
 
-    if len(text_summary) > 4000:
-        text_summary = text_summary[:4000] + "\n...(Danh sách quá dài)..."
-
+    if len(text_summary) > 4000: text_summary = text_summary[:4000] + "..."
     await callback.message.answer(text_summary, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
@@ -190,21 +330,19 @@ async def ask_private_message(callback: types.CallbackQuery, state: FSMContext):
     target_uid = callback.data.split("_")[1]
     await state.update_data(private_target_uid=target_uid)
     await state.set_state(AdminStates.waiting_for_private_msg)
-    await callback.message.answer(f"✉️ **GỬI TIN NHẮN CÁ NHÂN:**\nĐang gửi tới UID: `{target_uid}`\n👉 Nhập nội dung (hoặc gõ /cancel để hủy):", parse_mode="Markdown")
+    await callback.message.answer(f"✉️ Gửi tin nhắn tới UID: `{target_uid}`\nNhập nội dung:", parse_mode="Markdown")
     await callback.answer()
 
 @dp.message(StateFilter(AdminStates.waiting_for_private_msg))
 async def send_private_message_action(message: types.Message, state: FSMContext):
     user_data = await state.get_data()
-    target_uid = user_data["private_target_uid"]
     try:
-        await bot.send_message(chat_id=int(target_uid), text=f"📩 **Tin nhắn từ Admin:**\n\n{message.text.strip()}", parse_mode="Markdown")
-        await message.answer(f"✅ Đã gửi tới UID `{target_uid}`!", parse_mode="Markdown")
+        await bot.send_message(chat_id=int(user_data["private_target_uid"]), text=f"📩 **Tin nhắn từ Admin:**\n\n{message.text.strip()}", parse_mode="Markdown")
+        await message.answer("✅ Đã gửi thành công!", parse_mode="Markdown")
     except Exception as e:
         await message.answer(f"❌ Gửi thất bại: {str(e)}")
     await state.clear()
 
-# ADMIN - MÔN HỌC & COMBO & GIỚI THIỆU & BÀI GIẢNG & IN CODE
 @dp.callback_query(F.data == "admin_courses")
 async def admin_manage_courses(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID: return
@@ -233,7 +371,7 @@ async def set_edit_course_name(message: types.Message, state: FSMContext):
     db = load_data()
     db["courses"][user_data["edit_course_id"]]["name"] = message.text.strip()
     save_data(db)
-    await message.answer("✅ Đã đổi tên thành công!", parse_mode="Markdown")
+    await message.answer("✅ Đã đổi tên!", parse_mode="Markdown")
     await state.clear()
 
 @dp.callback_query(F.data.startswith("editprice_"))
@@ -241,7 +379,7 @@ async def ask_new_price(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID: return
     await state.update_data(edit_course_id=callback.data.split("_")[1])
     await state.set_state(AdminStates.waiting_for_new_price)
-    await callback.message.answer("💰 Nhập giá mới (chỉ số):", parse_mode="Markdown")
+    await callback.message.answer("💰 Nhập giá mới (số):", parse_mode="Markdown")
     await callback.answer()
 
 @dp.message(StateFilter(AdminStates.waiting_for_new_price))
@@ -253,7 +391,7 @@ async def set_new_price(message: types.Message, state: FSMContext):
     db = load_data()
     db["courses"][user_data["edit_course_id"]]["price"] = int(message.text.strip())
     save_data(db)
-    await message.answer("✅ Đã đổi giá thành công!", parse_mode="Markdown")
+    await message.answer("✅ Đã đổi giá!", parse_mode="Markdown")
     await state.clear()
 
 @dp.callback_query(F.data == "add_course")
@@ -273,7 +411,7 @@ async def ask_new_course_name(message: types.Message, state: FSMContext):
 async def ask_new_course_price(message: types.Message, state: FSMContext):
     await state.update_data(new_course_name=message.text.strip())
     await state.set_state(AdminStates.waiting_for_new_course_price)
-    await callback.message.answer("💰 Nhập GIÁ MÔN HỌC (chỉ số):", parse_mode="Markdown")
+    await callback.message.answer("💰 Nhập GIÁ MÔN HỌC (số):", parse_mode="Markdown")
 
 @dp.message(StateFilter(AdminStates.waiting_for_new_course_price))
 async def save_new_course(message: types.Message, state: FSMContext):
@@ -282,9 +420,9 @@ async def save_new_course(message: types.Message, state: FSMContext):
         return
     user_data = await state.get_data()
     db = load_data()
-    db["courses"][user_data["new_course_id"]] = {"name": user_data["new_course_name"], "price": int(message.text.strip()), "lessons": []}
+    db["courses"][user_data["new_course_id"]] = {"name": user_data["new_course_name"], "price": int(message.text.strip()), "chapters": []}
     save_data(db)
-    await message.answer("✅ Đã thêm môn học thành công!", parse_mode="Markdown")
+    await message.answer("✅ Đã thêm môn học!", parse_mode="Markdown")
     await state.clear()
 
 @dp.callback_query(F.data == "admin_combos")
@@ -302,27 +440,27 @@ async def admin_manage_combos(callback: types.CallbackQuery):
 async def ask_new_combo_id(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID: return
     await state.set_state(AdminStates.waiting_for_combo_id)
-    await callback.message.answer("➕ Nhập MÃ COMBO (VD: C1):", parse_mode="Markdown")
+    await callback.message.answer("➕ Nhập MÃ COMBO:", parse_mode="Markdown")
     await callback.answer()
 
 @dp.message(StateFilter(AdminStates.waiting_for_combo_id))
 async def ask_new_combo_name(message: types.Message, state: FSMContext):
     await state.update_data(combo_id=message.text.strip())
     await state.set_state(AdminStates.waiting_for_combo_name)
-    await callback.message.answer("📝 Nhập TÊN COMBO:", parse_mode="Markdown")
+    await message.answer("📝 Nhập TÊN COMBO:", parse_mode="Markdown")
 
 @dp.message(StateFilter(AdminStates.waiting_for_combo_name))
 async def ask_new_combo_courses(message: types.Message, state: FSMContext):
     await state.update_data(combo_name=message.text.strip())
     await state.set_state(AdminStates.waiting_for_combo_courses)
-    await callback.message.answer("🔗 Nhập các MÃ MÔN HỌC gộp, cách nhau bởi dấu phẩy (VD: Toan, Van):", parse_mode="Markdown")
+    await message.answer("🔗 Nhập các MÃ MÔN HỌC gộp (VD: Toan, Van):", parse_mode="Markdown")
 
 @dp.message(StateFilter(AdminStates.waiting_for_combo_courses))
 async def ask_new_combo_price(message: types.Message, state: FSMContext):
     courses = [c.strip() for c in message.text.strip().split(',') if c.strip()]
     await state.update_data(combo_courses=courses)
     await state.set_state(AdminStates.waiting_for_combo_price)
-    await callback.message.answer("💰 Nhập GIÁ COMBO (chỉ số):", parse_mode="Markdown")
+    await message.answer("💰 Nhập GIÁ COMBO (số):", parse_mode="Markdown")
 
 @dp.message(StateFilter(AdminStates.waiting_for_combo_price))
 async def save_new_combo(message: types.Message, state: FSMContext):
@@ -351,41 +489,6 @@ async def save_new_intro(message: types.Message, state: FSMContext):
     await message.answer("✅ Đã cập nhật giới thiệu!")
     await state.clear()
 
-@dp.callback_query(F.data == "admin_lessons")
-async def admin_manage_lessons(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID: return
-    data = load_data()
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
-    for cid, cinfo in data["courses"].items():
-        kb.inline_keyboard.append([InlineKeyboardButton(text=f"➕ Thêm bài vào {cinfo['name']}", callback_data=f"addlesson_{cid}")])
-    await callback.message.answer("📂 Chọn môn học để thêm bài:", reply_markup=kb, parse_mode="Markdown")
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("addlesson_"))
-async def ask_lesson_name(callback: types.CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID: return
-    await state.update_data(lesson_course_id=callback.data.split("_")[1])
-    await state.set_state(AdminStates.waiting_for_lesson_name)
-    await callback.message.answer("📝 Nhập TÊN BÀI GIẢNG:", parse_mode="Markdown")
-    await callback.answer()
-
-@dp.message(StateFilter(AdminStates.waiting_for_lesson_name))
-async def ask_lesson_link(message: types.Message, state: FSMContext):
-    await state.update_data(lesson_name=message.text.strip())
-    await state.set_state(AdminStates.waiting_for_lesson_link)
-    await callback.message.answer("🔗 Nhập LINK BÀI GIẢNG:", parse_mode="Markdown")
-
-@dp.message(StateFilter(AdminStates.waiting_for_lesson_link))
-async def save_new_lesson(message: types.Message, state: FSMContext):
-    user_data = await state.get_data()
-    db = load_data()
-    if "lessons" not in db["courses"][user_data["lesson_course_id"]]:
-        db["courses"][user_data["lesson_course_id"]]["lessons"] = []
-    db["courses"][user_data["lesson_course_id"]]["lessons"].append({"name": user_data["lesson_name"], "link": message.text.strip()})
-    save_data(db)
-    await message.answer("✅ Đã thêm bài giảng thành công!", parse_mode="Markdown")
-    await state.clear()
-
 @dp.callback_query(F.data == "admin_print_codes")
 async def show_print_code_menu(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID: return
@@ -395,7 +498,7 @@ async def show_print_code_menu(callback: types.CallbackQuery):
         kb.inline_keyboard.append([InlineKeyboardButton(text=f"🖨 Môn: {cinfo['name']}", callback_data=f"gen_course_{cid}")])
     for cid, cinfo in data.get("combos", {}).items():
         kb.inline_keyboard.append([InlineKeyboardButton(text=f"🖨 Combo: {cinfo['name']}", callback_data=f"gen_combo_{cid}")])
-    await callback.message.answer("🖨 Chọn mục cần in mã code:", reply_markup=kb, parse_mode="Markdown")
+    await callback.message.answer("🖨 Chọn mục in mã code:", reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("gen_course_") | F.data.startswith("gen_combo_"))
@@ -428,13 +531,15 @@ async def admin_send_broadcast(message: types.Message, state: FSMContext):
             await asyncio.sleep(0.05)
         except Exception:
             pass
-    await message.answer(f"✅ Đã gửi thông báo tổng tới {success} học viên!")
+    await message.answer(f"✅ Đã gửi tới {success} học viên!")
     await state.clear()
 
-# KHU VỰC HỌC TẬP & MUA HÀNG (TỰ ĐỘNG XÓA TRẠNG THÁI KẸT KHI BẤM NÚT)
+# ==========================================
+# KHU VỰC HỌC TẬP CỦA HỌC VIÊN (HIỂN THỊ CHƯƠNG & TRÌNH BÀY TỆP BÀI GIẢNG)
+# ==========================================
 @dp.message(F.text.startswith("🎓 Vào học"))
 async def student_learning_area(message: types.Message, state: FSMContext):
-    await state.clear() # Xóa mọi trạng thái kẹt
+    await state.clear()
     user_id = str(message.from_user.id)
     cname = message.text.replace("🎓 Vào học ", "").strip()
     data = load_data()
@@ -443,16 +548,34 @@ async def student_learning_area(message: types.Message, state: FSMContext):
     if not target_id or target_id not in data["users"].get(user_id, {}).get("courses", []):
         await message.answer("❌ Bạn chưa có quyền học môn này!")
         return
-    lessons = data["courses"][target_id].get("lessons", [])
-    if not lessons:
-        await message.answer("🚧 Môn này chưa có bài giảng nào. Admin hãy vào Quản lý bài giảng để thêm nhé!")
+        
+    course_info = data["courses"][target_id]
+    chapters = course_info.get("chapters", [])
+    
+    if not chapters:
+        # Tương thích ngược với list lessons cũ nếu có
+        lessons = course_info.get("lessons", [])
+        if not lessons:
+            await message.answer("🚧 Môn học này đang cập nhật tài liệu.")
+            return
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"▶ {l['name']}", url=l['link'])] for l in lessons])
+        await message.answer(f"🎓 **{cname}**: Tài liệu học tập", reply_markup=kb, parse_mode="Markdown")
         return
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"▶ {l['name']}", url=l['link'])] for l in lessons])
-    await message.answer(f"🎓 **{cname}**:", reply_markup=kb, parse_mode="Markdown")
+
+    # Trình bày theo từng chương và các tệp bài giảng bên trong
+    text = f"🎓 **KHU VỰC HỌC TẬP: {cname}**\nDanh sách các chương và tệp tài liệu:\n"
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    
+    for chap in chapters:
+        kb.inline_keyboard.append([InlineKeyboardButton(text=f"📂 --- {chap['chapter_name']} ---", callback_data="ignore")])
+        for lesson in chap.get("lessons", []):
+            kb.inline_keyboard.append([InlineKeyboardButton(text=f"📄 {lesson['name']}", url=lesson['link'])])
+            
+    await message.answer(text, reply_markup=kb, parse_mode="Markdown")
 
 @dp.message(F.text == "📖 Bảng danh sách")
 async def show_courses(message: types.Message, state: FSMContext):
-    await state.clear() # Xóa mọi trạng thái kẹt
+    await state.clear()
     data = load_data()
     kb = InlineKeyboardMarkup(inline_keyboard=[])
     for cid, cinfo in data.get("courses", {}).items():
@@ -481,7 +604,7 @@ async def process_course_view(callback: types.CallbackQuery):
         f"▪️ Ngân hàng: **MB Bank**\n"
         f"▪️ STK: **0812847035**\n"
         f"▪️ Nội dung: `{transfer_content}`\n\n"
-        f"⏳ _Chuyển khoản xong QR sẽ tự biến mất và nhận code tự động!_"
+        f"⏳ _Chuyển khoản xong QR sẽ tự biến mất và cấp quyền học tự động!_"
     )
     sent = await callback.message.answer_photo(photo=qr_url, caption=msg, parse_mode="Markdown")
     
@@ -494,7 +617,7 @@ async def process_course_view(callback: types.CallbackQuery):
 
 @dp.message(F.text == "🔑 Nhập code")
 async def enter_code_prompt(message: types.Message, state: FSMContext):
-    await state.clear() # Xóa mọi trạng thái kẹt
+    await state.clear()
     await message.answer("🔑 Nhập mã Code kích hoạt:")
 
 @dp.message(F.text.regexp(r'^[A-Z0-9-]+$'))
@@ -514,7 +637,7 @@ async def check_code(message: types.Message, state: FSMContext):
             if c_type == "combo":
                 to_grant = data["combos"][c_info["id"]]["course_ids"]
                 name = data["combos"][c_info["id"]]["name"]
-            elif c_type == "auto":
+            elif c_type == "auto" or c_type == "evt":
                 c_id = c_info.get("id")
                 if c_id in data["courses"]:
                     to_grant = [c_id]
@@ -524,7 +647,7 @@ async def check_code(message: types.Message, state: FSMContext):
                     name = data["combos"][c_id]["name"]
                 else:
                     to_grant = list(data["courses"].keys())[:1]
-                    name = "Khóa học tự động"
+                    name = "Khóa học"
             else:
                 c_id = c_info.get("course") or c_info.get("id")
                 to_grant = [c_id]
@@ -595,7 +718,7 @@ async def auto_payment_webhook(request):
                         break
             
             if not to_grant:
-                await bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ Cảnh báo: Giao dịch `{amount:,}đ` với nội dung `{transfer_content}` không khớp giá khóa học nào!")
+                await bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ Cảnh báo: Giao dịch `{amount:,}đ` nội dung `{transfer_content}` không khớp giá khóa nào!")
                 return web.json_response({"status": "Khong khop gia"})
             
             str_uid = str(user_id)
@@ -621,16 +744,16 @@ async def auto_payment_webhook(request):
             
             msg_to_user = (
                 f"🎉 **THANH TOÁN THÀNH CÔNG!**\n\n"
-                f"💳 Hệ thống đã nhận được `{amount:,}đ`.\n\n"
-                f"✅ _Hệ thống đã tự động thu hồi mã QR và cấp quyền truy cập **{item_name}** trực tiếp cho tài khoản của bạn._\n\n"
+                f"💳 Đã nhận `{amount:,}đ`.\n\n"
+                f"✅ Hệ thống đã tự động cấp quyền truy cập **{item_name}** trực tiếp cho tài khoản của bạn.\n\n"
                 f"👉 **Hãy gõ lệnh /start để Menu hiện ra nút 🎓 Vào Học nhé!**"
             )
             try:
                 await bot.send_message(chat_id=int(str_uid), text=msg_to_user, parse_mode="Markdown")
             except Exception as e:
-                await bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ Không thể gửi tin nhắn cho user {str_uid}: {str(e)}")
+                await bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ Gửi tin cho khách thất bại: {str(e)}")
             
-            await bot.send_message(chat_id=ADMIN_ID, text=f"🤑 **TIỀN VÀO NỔ THÀNH CÔNG!**\nKhách `{str_uid}` chuyển `{amount:,}đ`.\n✅ Đã cấp quyền **{item_name}** vào UID.\n🎫 Đã sinh mã event lưu kho: `{new_code}`", parse_mode="Markdown")
+            await bot.send_message(chat_id=ADMIN_ID, text=f"🤑 **TIỀN VÀO NỔ!**\nKhách `{str_uid}` chuyển `{amount:,}đ`.\n✅ Đã cấp **{item_name}** vào UID.\n🎫 Mã sự kiện lưu kho: `{new_code}`", parse_mode="Markdown")
             
         return web.json_response({"status": "success"})
     except Exception as e:
