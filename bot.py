@@ -3,6 +3,7 @@ import json
 import os
 import random
 import string
+import re  # <--- THÊM THƯ VIỆN NÀY ĐỂ TÌM KIẾM CHỮ THÔNG MINH
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, StateFilter, Command
@@ -72,7 +73,6 @@ def generate_random_code(prefix="VIP"):
     chars = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
     return f"{prefix}-{chars}"
 
-# === THÊM NÚT ADMIN VÀO THANH MENU CỐ ĐỊNH TẠI ĐÂY ===
 def get_user_menu(user_id):
     data = load_data()
     kb_layout = [
@@ -89,7 +89,6 @@ def get_user_menu(user_id):
         for i in range(0, len(study_buttons), 2):
             kb_layout.insert(0, study_buttons[i:i+2])
             
-    # NẾU LÀ ADMIN -> CẤP THÊM NÚT QUYỀN LỰC XUỐNG DƯỚI CÙNG
     if user_id == ADMIN_ID:
         kb_layout.append([KeyboardButton(text="👑 BẢNG ĐIỀU KHIỂN ADMIN")])
         
@@ -137,7 +136,7 @@ async def cancel_handler(message: types.Message, state: FSMContext):
     await message.answer("🔄 Đã hủy trạng thái hiện tại.", reply_markup=get_user_menu(message.from_user.id))
 
 # ==========================================
-# KHU VỰC ADMIN - GỌI TỪ NÚT BÀN PHÍM
+# KHU VỰC ADMIN
 # ==========================================
 @dp.message(F.text == "👑 BẢNG ĐIỀU KHIỂN ADMIN")
 async def show_admin_panel(message: types.Message, state: FSMContext):
@@ -153,7 +152,7 @@ async def show_admin_panel(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="🖨 Máy in Code", callback_data="admin_print_codes")],
         [InlineKeyboardButton(text="📢 Thông báo Tổng", callback_data="admin_broadcast")]
     ])
-    await message.answer(f"⚙️ **BẢNG ĐIỀU KHIỂN HỆ THỐNG:**\nChọn chức năng quản lý bên dưới:", reply_markup=admin_kb, parse_mode="Markdown")
+    await message.answer(f"⚙️️ **BẢNG ĐIỀU KHIỂN HỆ THỐNG:**\nChọn chức năng quản lý bên dưới:", reply_markup=admin_kb, parse_mode="Markdown")
 
 @dp.callback_query(F.data == "admin_manage_chapters")
 async def admin_manage_chapters(callback: types.CallbackQuery):
@@ -575,7 +574,7 @@ async def admin_send_broadcast(message: types.Message, state: FSMContext):
 
 
 # ==========================================
-# KHU VỰC HỌC TẬP (CẤU TRÚC PHÂN CẤP & TÌM KIẾM)
+# KHU VỰC HỌC TẬP CỦA HỌC VIÊN
 # ==========================================
 @dp.message(F.text.startswith("🎓 Vào học"))
 async def student_learning_area(message: types.Message, state: FSMContext):
@@ -695,7 +694,7 @@ async def read_lesson_content(callback: types.CallbackQuery):
     await callback.answer()
 
 # ==========================================
-# GIAO DỊCH VÀ CÁC NÚT MENU CƠ BẢN
+# CHỨC NĂNG CƠ BẢN & THANH TOÁN TỰ ĐỘNG
 # ==========================================
 @dp.message(F.text == "📖 Bảng danh sách")
 async def show_courses(message: types.Message, state: FSMContext):
@@ -784,58 +783,81 @@ async def intro_system(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(load_data().get("intro_text", "Mini-LMS"), parse_mode="Markdown")
 
-# WEBHOOK SEPAY
+# === BẢN CẬP NHẬT WEBHOOK SEPAY SIÊU MẠNH MẼ ===
 async def auto_payment_webhook(request):
     try:
-        data = await request.json()
-        transfer_content = data.get("content", "").upper()
-        amount = int(data.get("transferAmount", 0))
+        raw_data = await request.json()
+        print(f"WEBHOOK NHẬN ĐƯỢC: {raw_data}") # Ghi log trên Render để dễ sửa lỗi
         
-        if "MUAKHOA" in transfer_content:
-            words = transfer_content.replace(",", " ").replace(".", " ").split()
-            user_id = next((words[i + 1] for i, word in enumerate(words) if word == "MUAKHOA" and i + 1 < len(words)), None)
-            if not user_id: return web.json_response({"status": "Khong tim thay user_id"})
-                
-            db = load_data()
-            to_grant, item_name, matched_id, item_type = [], "", "", "course"
+        # Bắt mọi cấu trúc JSON từ SePay hoặc Casso
+        if "data" in raw_data and isinstance(raw_data["data"], dict):
+            data = raw_data["data"]
+        elif "data" in raw_data and isinstance(raw_data["data"], list) and len(raw_data["data"]) > 0:
+            data = raw_data["data"][0]
+        else:
+            data = raw_data
             
-            for cid, cinfo in db["courses"].items():
+        # Linh hoạt lấy Nội dung và Số tiền
+        transfer_content = str(data.get("content", data.get("transactionContent", data.get("description", "")))).upper()
+        amount = int(data.get("transferAmount", data.get("amount", data.get("inAmount", 0))))
+        
+        # Dùng Trí tuệ Regex để tìm ID dù khách có gõ dính liền (MUAKHOA12345) hay ngân hàng chèn thêm chữ
+        match = re.search(r'MUAKHOA\s*(\d+)', transfer_content)
+        if match:
+            user_id = match.group(1)
+        else:
+            print(f"Bỏ qua: Không thấy mã MUAKHOA trong '{transfer_content}'")
+            return web.json_response({"status": "Khong tim thay user_id"})
+            
+        db = load_data()
+        to_grant, item_name, matched_id, item_type = [], "", "", "course"
+        
+        # Rà soát khớp giá
+        for cid, cinfo in db["courses"].items():
+            if amount == cinfo["price"]:
+                to_grant, item_name, matched_id, item_type = [cid], cinfo["name"], cid, "course"
+                break
+        if not to_grant:
+            for cid, cinfo in db.get("combos", {}).items():
                 if amount == cinfo["price"]:
-                    to_grant, item_name, matched_id, item_type = [cid], cinfo["name"], cid, "course"
+                    to_grant, item_name, matched_id, item_type = cinfo["course_ids"], cinfo["name"], cid, "combo"
                     break
-            if not to_grant:
-                for cid, cinfo in db.get("combos", {}).items():
-                    if amount == cinfo["price"]:
-                        to_grant, item_name, matched_id, item_type = cinfo["course_ids"], cinfo["name"], cid, "combo"
-                        break
-            if not to_grant: return web.json_response({"status": "Khong khop gia"})
-            
-            str_uid = str(user_id)
-            if str_uid not in db["users"]:
-                db["users"][str_uid] = {"name": "Học viên", "role": "member", "courses": [], "qr_msg_id": None, "last_active": datetime.now().isoformat()}
-            
-            qr_msg_id = db["users"][str_uid].get("qr_msg_id")
-            if qr_msg_id:
-                try: await bot.delete_message(chat_id=int(str_uid), message_id=qr_msg_id)
-                except Exception: pass 
-            db["users"][str_uid]["qr_msg_id"] = None
-            
-            for cid in to_grant:
-                if cid not in db["users"][str_uid]["courses"]: db["users"][str_uid]["courses"].append(cid)
-            db["users"][str_uid]["role"] = "member"
-            
-            new_code = generate_random_code("EVT")
-            db["codes"][new_code] = {"type": item_type, "id": matched_id, "used": False}
-            save_data(db)
-            
-            try:
-                await bot.send_message(chat_id=int(str_uid), text=f"🎉 **THANH TOÁN THÀNH CÔNG!**\n\n💳 Nhận `{amount:,}đ`.\n✅ Đã cấp quyền **{item_name}**.\n\n👉 Gõ `/start` để vào học!", parse_mode="Markdown")
-            except Exception: pass
-            
-            await bot.send_message(chat_id=ADMIN_ID, text=f"🤑 **TIỀN VÀO NỔ!**\nKhách `{str_uid}` chuyển `{amount:,}đ`.\n✅ Đã cấp **{item_name}**.\n🎫 Mã lưu kho: `{new_code}`", parse_mode="Markdown")
-            
+                    
+        if not to_grant: 
+            print(f"Cảnh báo: Khách chuyển {amount}đ nhưng không khớp giá môn nào!")
+            return web.json_response({"status": "Khong khop gia"})
+        
+        str_uid = str(user_id)
+        if str_uid not in db["users"]:
+            db["users"][str_uid] = {"name": "Học viên", "role": "member", "courses": [], "qr_msg_id": None, "last_active": datetime.now().isoformat()}
+        
+        qr_msg_id = db["users"][str_uid].get("qr_msg_id")
+        if qr_msg_id:
+            try: await bot.delete_message(chat_id=int(str_uid), message_id=qr_msg_id)
+            except Exception: pass 
+        db["users"][str_uid]["qr_msg_id"] = None
+        
+        for cid in to_grant:
+            if cid not in db["users"][str_uid]["courses"]: db["users"][str_uid]["courses"].append(cid)
+        db["users"][str_uid]["role"] = "member"
+        
+        new_code = generate_random_code("EVT")
+        db["codes"][new_code] = {"type": item_type, "id": matched_id, "used": False}
+        save_data(db)
+        
+        # Báo về cho Học viên
+        try:
+            await bot.send_message(chat_id=int(str_uid), text=f"🎉 **THANH TOÁN THÀNH CÔNG!**\n\n💳 Hệ thống đã nhận: `{amount:,}đ`.\n✅ Đã tự động cấp quyền: **{item_name}**.\n\n👉 Bạn hãy gõ lệnh `/start` để vào học nhé!", parse_mode="Markdown")
+        except Exception as e: print(f"Lỗi gửi tin nhắn cho học viên: {e}")
+        
+        # Báo về cho Admin
+        try:
+            await bot.send_message(chat_id=ADMIN_ID, text=f"🤑 **TIỀN VÀO TÀI KHOẢN!**\nKhách `{str_uid}` chuyển `{amount:,}đ`.\n✅ Đã cấp: **{item_name}**.\n🎫 Mã lưu kho: `{new_code}`", parse_mode="Markdown")
+        except Exception as e: print(f"Lỗi gửi tin nhắn cho Admin: {e}")
+        
         return web.json_response({"status": "success"})
     except Exception as e:
+        print(f"Lỗi hệ thống Webhook: {e}")
         return web.json_response({"status": "error", "message": str(e)})
 
 async def handle_ping(request):
